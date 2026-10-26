@@ -1,0 +1,22 @@
+# Example Prometheus configuration for the BGTtracker API.
+#
+# Run Prometheus with:  prometheus --config.file=monitoring/prometheus.yml
+# Then open http://localhost:9090 and try a query such as:
+#   sum by (route, status) (rate(bgt_http_requests_total[5m]))
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - alerts.yml
+
+scrape_configs:
+  - job_name: bgttracker-api
+    metrics_path: /metrics
+    # Must match METRICS_TOKEN in the API's .env (remove this block if METRICS_TOKEN is empty in development)
+    authorization:
+      type: Bearer
+      credentials: <same value as METRICS_TOKEN>
+    static_configs:
+      - targets: ['localhost:4000']

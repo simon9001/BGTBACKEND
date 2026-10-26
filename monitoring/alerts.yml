@@ -1,0 +1,57 @@
+# Example alert rules for the BGTtracker API (loaded by prometheus.yml).
+# Thresholds are starting points for a single department - tune as needed.
+
+groups:
+  - name: bgttracker-security
+    rules:
+      # Possible password guessing
+      - alert: ManyFailedLogins
+        expr: sum(increase(bgt_auth_logins_total{result="invalid_credentials"}[15m])) > 10
+        labels:
+          severity: warning
+        annotations:
+          summary: "More than 10 failed logins in 15 minutes"
+          description: "Check GET /api/audit-logs/auth-events?event_type=LOGIN_FAILED for the emails and IP addresses."
+
+      # Forged / tampered tokens or people probing pages they cannot use
+      - alert: SuspiciousAccessDenials
+        expr: sum(increase(bgt_auth_denied_total{reason=~"invalid_token|forbidden_role|not_owner"}[15m])) > 20
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unusual number of rejected requests"
+          description: "Search the log files for \"channel\":\"security\" to see who and from where."
+
+  - name: bgttracker-health
+    rules:
+      - alert: ApiDown
+        expr: up{job="bgttracker-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "BGTtracker API is not responding"
+
+      - alert: ServerErrors
+        expr: sum(increase(bgt_app_errors_total[10m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "The API returned unexpected 500 errors"
+          description: "Each error response includes a request_id; search the log files for it."
+
+      - alert: SlowResponses
+        expr: histogram_quantile(0.95, sum by (le) (rate(bgt_http_request_duration_seconds_bucket[5m]))) > 2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95% of requests are taking longer than 2 seconds"
+
+      - alert: DatabasePoolExhausted
+        expr: bgt_db_pool_connections{state="pending"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Requests are waiting for a free database connection"
