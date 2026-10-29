@@ -376,7 +376,7 @@ SELECT
     CASE
         WHEN p.status = 'Completed' THEN 100
         WHEN ws.stage_id IS NULL THEN 0
-        ELSE stage_pos.passed * 100 / NULLIF(stage_pos.total, 0)
+        ELSE stage_passed.passed * 100 / NULLIF(stage_total.total, 0)
     END AS progress_percent,
     p.tender_float_date, p.tender_opening_date, p.tender_days,
     p.is_escalated, p.escalated_to, p.escalation_note,
@@ -391,10 +391,15 @@ LEFT JOIN dbo.Lookups scm       ON scm.lookup_id = p.scm_officer_id
 LEFT JOIN dbo.BudgetLines bl    ON bl.budget_line_id = p.budget_line_id
 LEFT JOIN dbo.WorkflowStages ws ON ws.stage_id = p.current_stage_id
 OUTER APPLY (
-    SELECT SUM(CASE WHEN s.sort_order < ws.sort_order THEN 1 ELSE 0 END) AS passed,
-           COUNT(*) AS total
+    SELECT COUNT(*) AS total
     FROM dbo.WorkflowStages s
     WHERE s.is_active = 1
-) stage_pos
+) stage_total
+OUTER APPLY (
+    SELECT COUNT(*) AS passed
+    FROM dbo.WorkflowStages s
+    WHERE s.is_active = 1
+      AND s.sort_order < ws.sort_order
+) stage_passed
 WHERE p.is_deleted = 0;
 GO
