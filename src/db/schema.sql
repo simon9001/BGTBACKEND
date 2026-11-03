@@ -164,7 +164,7 @@ CREATE TABLE dbo.Procurements (
     acquisition_method_id   INT           NULL     CONSTRAINT FK_Procurements_method REFERENCES dbo.Lookups(lookup_id),
     scm_officer_id          INT           NULL     CONSTRAINT FK_Procurements_scm REFERENCES dbo.Lookups(lookup_id),
     status                  NVARCHAR(20)  NOT NULL CONSTRAINT DF_Procurements_status DEFAULT 'Not Started'
-                            CONSTRAINT CK_Procurements_status CHECK (status IN ('Not Started', 'In Progress', 'On Hold', 'Completed', 'Cancelled', 'Rejected')),
+                            CONSTRAINT CK_Procurements_status CHECK (status IN ('Not Started', 'In Progress', 'In Review', 'On Hold', 'Completed', 'Cancelled', 'Rejected')),
     current_stage_id        INT           NULL     CONSTRAINT FK_Procurements_stage REFERENCES dbo.WorkflowStages(stage_id),
     stage_entered_at        DATE          NULL,
     tender_float_date       DATE          NULL,
@@ -196,7 +196,7 @@ CREATE TABLE dbo.StageEvents (
     procurement_id  INT            NOT NULL CONSTRAINT FK_StageEvents_procurement REFERENCES dbo.Procurements(procurement_id),
     stage_id        INT            NOT NULL CONSTRAINT FK_StageEvents_stage REFERENCES dbo.WorkflowStages(stage_id),
     status          NVARCHAR(20)   NOT NULL
-                    CONSTRAINT CK_StageEvents_status CHECK (status IN ('Pending', 'In Progress', 'Approved', 'Completed', 'Rejected', 'Returned')),
+                    CONSTRAINT CK_StageEvents_status CHECK (status IN ('Pending', 'In Progress', 'In Review', 'Approved', 'Completed', 'Rejected', 'Returned')),
     event_date      DATE           NOT NULL,
     notes           NVARCHAR(1000) NULL,
     recorded_by     INT            NOT NULL CONSTRAINT FK_StageEvents_recorded_by REFERENCES dbo.Users(user_id),
@@ -368,7 +368,7 @@ SELECT
     p.stage_entered_at,
     DATEDIFF(DAY, p.stage_entered_at, CAST(SYSDATETIME() AS DATE)) AS days_in_stage,
     CAST(CASE
-            WHEN p.status IN ('Not Started', 'In Progress')
+            WHEN p.status IN ('Not Started', 'In Progress', 'In Review')
              AND p.stage_entered_at IS NOT NULL
              AND DATEDIFF(DAY, p.stage_entered_at, CAST(SYSDATETIME() AS DATE)) > ws.sla_days
             THEN 1 ELSE 0
@@ -402,4 +402,22 @@ OUTER APPLY (
       AND s.sort_order < ws.sort_order
 ) stage_passed
 WHERE p.is_deleted = 0;
+GO
+/* -----------------------------------------------------------------------------
+   Upgrade for databases created before "In Review" was added (it is an option
+   on the tracker's Lists sheet). New databases already have it from the tables
+   above, so these only run where the old constraint is still in place.
+----------------------------------------------------------------------------- */
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Procurements_status' AND definition NOT LIKE '%In Review%')
+BEGIN
+    ALTER TABLE dbo.Procurements DROP CONSTRAINT CK_Procurements_status;
+    ALTER TABLE dbo.Procurements ADD CONSTRAINT CK_Procurements_status CHECK (status IN ('Not Started', 'In Progress', 'In Review', 'On Hold', 'Completed', 'Cancelled', 'Rejected'));
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_StageEvents_status' AND definition NOT LIKE '%In Review%')
+BEGIN
+    ALTER TABLE dbo.StageEvents DROP CONSTRAINT CK_StageEvents_status;
+    ALTER TABLE dbo.StageEvents ADD CONSTRAINT CK_StageEvents_status CHECK (status IN ('Pending', 'In Progress', 'In Review', 'Approved', 'Completed', 'Rejected', 'Returned'));
+END
 GO

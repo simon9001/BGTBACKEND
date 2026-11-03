@@ -285,7 +285,7 @@ export const deleteProcurementService = async (before: ProcurementRow, actorId: 
  *   Not Started -> In Progress once any step is recorded
  *   -> Completed when the final "Closed" step is approved/completed
  */
-const recomputeCurrentStage = async (tx: sql.Transaction, procurementId: number): Promise<void> => {
+export const recomputeCurrentStage = async (tx: sql.Transaction, procurementId: number): Promise<void> => {
     await new sql.Request(tx)
         .input('id', sql.Int, procurementId)
         .query(`

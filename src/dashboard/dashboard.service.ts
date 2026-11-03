@@ -87,7 +87,7 @@ export const getSummaryService = async (filters: DashboardFilters) => {
         SELECT
             COUNT(*) AS total,
             SUM(CASE WHEN status = 'Not Started' THEN 1 ELSE 0 END) AS not_started,
-            SUM(CASE WHEN status = 'In Progress' THEN 1 ELSE 0 END) AS in_progress,
+            SUM(CASE WHEN status IN ('In Progress', 'In Review') THEN 1 ELSE 0 END) AS in_progress,
             SUM(CASE WHEN status = 'On Hold'     THEN 1 ELSE 0 END) AS on_hold,
             SUM(CASE WHEN status = 'Completed'   THEN 1 ELSE 0 END) AS completed,
             SUM(CASE WHEN status IN ('Cancelled', 'Rejected') THEN 1 ELSE 0 END) AS cancelled_or_rejected,
@@ -193,7 +193,7 @@ export const getPipelineService = async (filters: DashboardFilters) => {
         WITH open_items AS (
             SELECT p.current_stage_id, p.is_overdue
             FROM dbo.vw_Procurements p
-            WHERE p.fy_id = @fy_id AND p.status IN ('Not Started', 'In Progress', 'On Hold')
+            WHERE p.fy_id = @fy_id AND p.status IN ('Not Started', 'In Progress', 'In Review', 'On Hold')
               AND ${categoryOwnerFilter('p')}
         )
         SELECT NULL AS stage_id, 'NOT_STARTED' AS stage_code, 'Not started yet' AS stage_name, 'Memo' AS stage_group, 0 AS sort_order,
@@ -256,7 +256,7 @@ export const getOfficerWorkloadService = async (filters: DashboardFilters) => {
     const result = await filteredRequest(filters).query(`
         SELECT u.user_id, u.full_name,
             SUM(CASE WHEN p.status = 'Not Started' THEN 1 ELSE 0 END) AS not_started,
-            SUM(CASE WHEN p.status = 'In Progress' THEN 1 ELSE 0 END) AS in_progress,
+            SUM(CASE WHEN p.status IN ('In Progress', 'In Review') THEN 1 ELSE 0 END) AS in_progress,
             SUM(CASE WHEN p.status = 'On Hold'     THEN 1 ELSE 0 END) AS on_hold,
             SUM(CASE WHEN p.status = 'Completed'   THEN 1 ELSE 0 END) AS completed,
             SUM(CASE WHEN p.is_overdue = 1 THEN 1 ELSE 0 END) AS overdue,
@@ -328,7 +328,7 @@ export const getAttentionListService = async (filters: DashboardFilters) => {
             current_stage_name, days_in_stage, sla_days, is_overdue, is_escalated, escalated_to, escalation_note
         FROM dbo.vw_Procurements p
         WHERE p.fy_id = @fy_id
-          AND p.status IN ('Not Started', 'In Progress', 'On Hold')
+          AND p.status IN ('Not Started', 'In Progress', 'In Review', 'On Hold')
           AND (p.is_overdue = 1 OR p.is_escalated = 1)
           AND ${categoryOwnerFilter('p')}
         ORDER BY p.is_escalated DESC, p.priority_rank DESC, (p.days_in_stage - p.sla_days) DESC;

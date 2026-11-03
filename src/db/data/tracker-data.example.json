@@ -1,0 +1,67 @@
+{
+    "financialYears": [
+        "2026/27",
+        "2027/28",
+        "2028/29"
+    ],
+    "currentFinancialYear": "2026/27",
+    "undatedStepDate": "2026-11-02",
+    "owners": [
+        "Example Officer"
+    ],
+    "budgetLines": [
+        {
+            "code": "A-001-01",
+            "description": "Example budget line",
+            "category": "ICT Equipment",
+            "quantity": 2,
+            "unitPrice": 500000,
+            "owner": "Example Officer",
+            "priority": "High",
+            "amounts": [
+                1000000,
+                0,
+                0
+            ]
+        }
+    ],
+    "memos": [
+        {
+            "title": "Example memo",
+            "owner": "Example Officer",
+            "delivered": "2026-08-21",
+            "approved": "2026-08-21",
+            "lines": [
+                "A-001-01"
+            ]
+        }
+    ],
+    "budgetSheetProgress": {
+        "A-001-01": {
+            "method": "Open Tender",
+            "steps": [
+                {
+                    "stage": "EGP_PR_RAISED",
+                    "status": "Completed"
+                }
+            ]
+        }
+    },
+    "standaloneProcurements": [
+        {
+            "reference": "T-006-01",
+            "title": "Example standalone activity",
+            "owner": "Example Officer",
+            "category": "Extension of Time",
+            "priority": "Medium",
+            "status": "In Progress",
+            "notes": "Example note"
+        }
+    ],
+    "tasks": [
+        {
+            "title": "Example task",
+            "owner": null
+        }
+    ]
+}

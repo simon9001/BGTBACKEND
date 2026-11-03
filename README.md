@@ -27,6 +27,7 @@ pnpm dev                        # http://localhost:4000
 | `pnpm typecheck` | Type-check without building |
 | `pnpm db:migrate` | Run `src/db/schema.sql` + `seed.sql` (safe to re-run) |
 | `pnpm db:seed-admin` | Create the first Head of ICT account |
+| `pnpm db:seed-tracker` | Import `src/db/data/tracker-data.json`, the git-ignored data from ICT Task Tracker 26_27.xlsx (safe to re-run). See `tracker-data.example.json` for the format |
 
 ## Folder structure
 

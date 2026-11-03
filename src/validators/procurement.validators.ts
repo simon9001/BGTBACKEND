@@ -5,8 +5,8 @@ import { PaginationQuerySchema, id, isoDate, optionalText, queryId } from './com
  * Procurement & stage-event validators.
  */
 
-export const PROCUREMENT_STATUSES = ['Not Started', 'In Progress', 'On Hold', 'Completed', 'Cancelled', 'Rejected'] as const;
-export const STAGE_EVENT_STATUSES = ['Pending', 'In Progress', 'Approved', 'Completed', 'Rejected', 'Returned'] as const;
+export const PROCUREMENT_STATUSES = ['Not Started', 'In Progress', 'In Review', 'On Hold', 'Completed', 'Cancelled', 'Rejected'] as const;
+export const STAGE_EVENT_STATUSES = ['Pending', 'In Progress', 'In Review', 'Approved', 'Completed', 'Rejected', 'Returned'] as const;
 
 // Fields shared by create and update
 const procurementFields = {
