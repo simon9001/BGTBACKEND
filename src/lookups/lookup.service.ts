@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import { cached } from '../utils/cache.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
@@ -19,7 +20,10 @@ export interface Lookup {
 const COLUMNS = 'lookup_id, lookup_type, value, sort_order, is_active';
 
 // List lookups, optionally of one type
-export const getLookupsService = async (type: LookupType | undefined, includeInactive: boolean): Promise<Lookup[]> => {
+export const getLookupsService = (type: LookupType | undefined, includeInactive: boolean) =>
+    cached(`lookups:${type ?? 'all'}:${includeInactive}`, () => loadLookups(type, includeInactive));
+
+const loadLookups = async (type: LookupType | undefined, includeInactive: boolean): Promise<Lookup[]> => {
     const db = getDbPool();
     const result = await db.request()
         .input('type', sql.NVarChar(50), type ?? null)

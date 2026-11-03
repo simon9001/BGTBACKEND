@@ -1,6 +1,8 @@
 import sql from 'mssql';
 import { getDbPool } from '../db/dbconfig.js';
 import type { DashboardFilters } from '../validators/dashboard.validators.js';
+import { PROCUREMENT_STATUSES } from '../validators/procurement.validators.js';
+import { TASK_STATUSES } from '../validators/task.validators.js';
 
 /**
  * Dashboard service - read-only aggregate queries that feed the charts.
@@ -12,6 +14,16 @@ import type { DashboardFilters } from '../validators/dashboard.validators.js';
  *   paid        = payments made within the year (actual expenditure)
  *   outstanding = approved/unpaid invoice balances right now
  * Kenyan FY quarters: Q1 Jul-Sep, Q2 Oct-Dec, Q3 Jan-Mar, Q4 Apr-Jun.
+ *
+ * With a quarter chosen:
+ *   budget        = that quarter's plan
+ *   payments      = paid within the quarter
+ *   invoices      = received within the quarter
+ *   contracts     = starting within the quarter
+ *   procurements  = with a step recorded within the quarter
+ *   memos         = delivered within the quarter
+ *   tasks         = due (or, with no due date, created) within the quarter
+ * The quarterly chart, year comparison and expiring contracts ignore it.
  */
 
 // ------------------------------- Helpers -------------------------------------
@@ -21,12 +33,32 @@ const filteredRequest = (filters: DashboardFilters) =>
     getDbPool().request()
         .input('fy_id', sql.Int, filters.fy_id)
         .input('category_id', sql.Int, filters.category_id ?? null)
-        .input('owner_id', sql.Int, filters.owner_id ?? null);
+        .input('owner_id', sql.Int, filters.owner_id ?? null)
+        .input('quarter', sql.Int, filters.quarter ?? null)
+        .input('q_start', sql.Date, filters.quarter_from ?? null)
+        .input('q_end', sql.Date, filters.quarter_to ?? null);
 
-// Declares @start / @end as the selected financial year's dates
-const DECLARE_FY_DATES = `
+// Declares @start / @end as the whole financial year
+const DECLARE_FULL_YEAR = `
     DECLARE @start DATE, @end DATE;
     SELECT @start = start_date, @end = end_date FROM dbo.FinancialYears WHERE fy_id = @fy_id;`;
+
+// Declares @start / @end as the period being viewed: the chosen quarter, or the whole year
+const DECLARE_FY_DATES = `${DECLARE_FULL_YEAR}
+    IF @q_start IS NOT NULL SELECT @start = @q_start, @end = @q_end;`;
+
+// The plan for the period: one quarter's amount, or the whole year's
+const plannedAmount = (alias: string) => `CASE @quarter
+    WHEN 1 THEN ${alias}.q1_amount WHEN 2 THEN ${alias}.q2_amount
+    WHEN 3 THEN ${alias}.q3_amount WHEN 4 THEN ${alias}.q4_amount
+    ELSE ${alias}.planned_amount END`;
+
+// A date column falls within the chosen quarter (always true with none chosen)
+const inQuarter = (column: string) => `(@q_start IS NULL OR ${column} BETWEEN @q_start AND @q_end)`;
+
+// A procurement had a step recorded within the chosen quarter
+const procurementInQuarter = (alias: string) => `(@q_start IS NULL OR EXISTS (
+    SELECT 1 FROM dbo.StageEvents qe WHERE qe.procurement_id = ${alias}.procurement_id AND qe.event_date BETWEEN @q_start AND @q_end))`;
 
 // Category / owner filter for a table aliased as `alias`
 const categoryOwnerFilter = (alias: string) =>
@@ -51,7 +83,7 @@ export const getSummaryService = async (filters: DashboardFilters) => {
         ${DECLARE_FY_DATES}
 
         SELECT
-            (SELECT ISNULL(SUM(a.planned_amount), 0)
+            (SELECT ISNULL(SUM(${plannedAmount('a')}), 0)
              FROM dbo.BudgetAllocations a
              JOIN dbo.BudgetLines bl ON bl.budget_line_id = a.budget_line_id AND bl.is_deleted = 0
              WHERE a.fy_id = @fy_id AND ${categoryOwnerFilter('bl')}) AS budget,
@@ -59,7 +91,7 @@ export const getSummaryService = async (filters: DashboardFilters) => {
             (SELECT ISNULL(SUM(c.contract_value), 0)
              FROM dbo.Contracts c
              JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
-             WHERE c.is_deleted = 0 AND c.status <> 'Terminated' AND p.fy_id = @fy_id AND ${categoryOwnerFilter('p')}) AS contracted,
+             WHERE c.is_deleted = 0 AND c.status <> 'Terminated' AND p.fy_id = @fy_id AND ${inQuarter('c.start_date')} AND ${categoryOwnerFilter('p')}) AS contracted,
 
             (SELECT ISNULL(SUM(i.amount), 0)
              FROM dbo.Invoices i
@@ -76,13 +108,13 @@ export const getSummaryService = async (filters: DashboardFilters) => {
              JOIN dbo.Contracts c    ON c.contract_id = i.contract_id AND c.is_deleted = 0
              JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
              OUTER APPLY (SELECT SUM(amount) AS total FROM dbo.Payments WHERE invoice_id = i.invoice_id AND is_deleted = 0) paid
-             WHERE i.is_deleted = 0 AND i.status NOT IN ('Paid', 'Rejected') AND ${categoryOwnerFilter('p')}) AS outstanding,
+             WHERE i.is_deleted = 0 AND i.status NOT IN ('Paid', 'Rejected') AND ${inQuarter('i.received_date')} AND ${categoryOwnerFilter('p')}) AS outstanding,
 
             (SELECT COUNT(*)
              FROM dbo.Invoices i
              JOIN dbo.Contracts c    ON c.contract_id = i.contract_id AND c.is_deleted = 0
              JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
-             WHERE i.is_deleted = 0 AND i.status NOT IN ('Paid', 'Rejected') AND ${categoryOwnerFilter('p')}) AS unpaid_invoices;
+             WHERE i.is_deleted = 0 AND i.status NOT IN ('Paid', 'Rejected') AND ${inQuarter('i.received_date')} AND ${categoryOwnerFilter('p')}) AS unpaid_invoices;
 
         SELECT
             COUNT(*) AS total,
@@ -94,7 +126,7 @@ export const getSummaryService = async (filters: DashboardFilters) => {
             SUM(CASE WHEN is_overdue = 1 THEN 1 ELSE 0 END) AS overdue,
             SUM(CASE WHEN is_escalated = 1 AND status NOT IN ('Completed', 'Cancelled', 'Rejected') THEN 1 ELSE 0 END) AS escalated
         FROM dbo.vw_Procurements p
-        WHERE p.fy_id = @fy_id AND ${categoryOwnerFilter('p')};
+        WHERE p.fy_id = @fy_id AND ${procurementInQuarter('p')} AND ${categoryOwnerFilter('p')};
     `);
 
     const [moneyRows, countRows] = result.recordsets as sql.IRecordSet<any>[];
@@ -122,8 +154,8 @@ export const getBudgetByCategoryService = async (filters: DashboardFilters) => {
     const result = await filteredRequest(filters).query(`
         ${DECLARE_FY_DATES}
 
-        SELECT cat.lookup_id AS category_id, cat.value AS category,
-            ISNULL((SELECT SUM(a.planned_amount)
+        SELECT cat.lookup_id AS category_id, cat.value AS category, cat.sort_order,
+            ISNULL((SELECT SUM(${plannedAmount('a')})
                     FROM dbo.BudgetAllocations a
                     JOIN dbo.BudgetLines bl ON bl.budget_line_id = a.budget_line_id AND bl.is_deleted = 0
                     WHERE a.fy_id = @fy_id AND bl.category_id = cat.lookup_id
@@ -131,7 +163,7 @@ export const getBudgetByCategoryService = async (filters: DashboardFilters) => {
             ISNULL((SELECT SUM(c.contract_value)
                     FROM dbo.Contracts c
                     JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
-                    WHERE c.is_deleted = 0 AND c.status <> 'Terminated' AND p.fy_id = @fy_id AND p.category_id = cat.lookup_id
+                    WHERE c.is_deleted = 0 AND c.status <> 'Terminated' AND p.fy_id = @fy_id AND ${inQuarter('c.start_date')} AND p.category_id = cat.lookup_id
                       AND (@owner_id IS NULL OR p.owner_id = @owner_id)), 0) AS contracted,
             ISNULL((SELECT SUM(pay.amount) ${PAYMENTS_WITH_PROCUREMENT}
                       AND pay.payment_date BETWEEN @start AND @end AND p.category_id = cat.lookup_id
@@ -142,16 +174,15 @@ export const getBudgetByCategoryService = async (filters: DashboardFilters) => {
         ORDER BY cat.sort_order;
     `);
 
-    // Hide categories with no activity at all this year
+    // Categories with nothing yet stay in, so every category on the Lists sheet shows
     return result.recordset
-        .map((row) => ({ ...row, budget: Number(row.budget), contracted: Number(row.contracted), paid: Number(row.paid) }))
-        .filter((row) => row.budget > 0 || row.contracted > 0 || row.paid > 0);
+        .map((row) => ({ ...row, budget: Number(row.budget), contracted: Number(row.contracted), paid: Number(row.paid) }));
 };
 
 /** Planned vs actual spend per quarter, with running totals. */
 export const getQuarterlySpendService = async (filters: DashboardFilters) => {
     const result = await filteredRequest(filters).query(`
-        ${DECLARE_FY_DATES}
+        ${DECLARE_FULL_YEAR}
 
         SELECT
             ISNULL(SUM(a.q1_amount), 0) AS q1, ISNULL(SUM(a.q2_amount), 0) AS q2,
@@ -164,9 +195,11 @@ export const getQuarterlySpendService = async (filters: DashboardFilters) => {
         ${PAYMENTS_WITH_PROCUREMENT}
           AND pay.payment_date BETWEEN @start AND @end AND ${categoryOwnerFilter('p')}
         GROUP BY ${fiscalQuarter('pay.payment_date')};
+
+        SELECT CONVERT(CHAR(10), @start, 23) AS start_date;
     `);
 
-    const [plannedRows, actualRows] = result.recordsets as sql.IRecordSet<any>[];
+    const [plannedRows, actualRows, fyStart] = result.recordsets as sql.IRecordSet<any>[];
     const planned = plannedRows[0];
     const actualByQuarter = new Map<number, number>(actualRows.map((row) => [row.quarter, Number(row.actual)]));
 
@@ -179,6 +212,7 @@ export const getQuarterlySpendService = async (filters: DashboardFilters) => {
         cumulativeActual += actualAmount;
         return {
             quarter: `Q${quarter}`,
+            ...periodOf(fyStart[0].start_date, (quarter - 1) * 3, 3),
             planned: plannedAmount,
             actual: actualAmount,
             cumulative_planned: cumulativePlanned,
@@ -194,7 +228,7 @@ export const getPipelineService = async (filters: DashboardFilters) => {
             SELECT p.current_stage_id, p.is_overdue
             FROM dbo.vw_Procurements p
             WHERE p.fy_id = @fy_id AND p.status IN ('Not Started', 'In Progress', 'In Review', 'On Hold')
-              AND ${categoryOwnerFilter('p')}
+              AND ${procurementInQuarter('p')} AND ${categoryOwnerFilter('p')}
         )
         SELECT NULL AS stage_id, 'NOT_STARTED' AS stage_code, 'Not started yet' AS stage_name, 'Memo' AS stage_group, 0 AS sort_order,
                COUNT(*) AS items, SUM(CAST(is_overdue AS INT)) AS overdue
@@ -223,7 +257,7 @@ export const getStageDurationsService = async (filters: DashboardFilters) => {
             SELECT e.procurement_id, e.stage_id, MIN(e.event_date) AS passed_on
             FROM dbo.StageEvents e
             JOIN dbo.Procurements p ON p.procurement_id = e.procurement_id AND p.is_deleted = 0
-            WHERE e.status IN ('Approved', 'Completed') AND p.fy_id = @fy_id AND ${categoryOwnerFilter('p')}
+            WHERE e.status IN ('Approved', 'Completed') AND p.fy_id = @fy_id AND ${inQuarter('e.event_date')} AND ${categoryOwnerFilter('p')}
             GROUP BY e.procurement_id, e.stage_id
         ),
         durations AS (
@@ -267,6 +301,7 @@ export const getOfficerWorkloadService = async (filters: DashboardFilters) => {
         LEFT JOIN dbo.vw_Procurements p
                ON p.owner_id = u.user_id AND p.fy_id = @fy_id
               AND (@category_id IS NULL OR p.category_id = @category_id)
+              AND ${procurementInQuarter('p')}
         WHERE u.is_active = 1 AND u.role IN ('admin', 'officer')
           AND (@owner_id IS NULL OR u.user_id = @owner_id)
         GROUP BY u.user_id, u.full_name
@@ -285,7 +320,7 @@ export const getInvoiceAgeingService = async (filters: DashboardFilters) => {
             JOIN dbo.Contracts c    ON c.contract_id = i.contract_id AND c.is_deleted = 0
             JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
             OUTER APPLY (SELECT SUM(amount) AS total FROM dbo.Payments WHERE invoice_id = i.invoice_id AND is_deleted = 0) paid
-            WHERE i.is_deleted = 0 AND i.status NOT IN ('Paid', 'Rejected') AND ${categoryOwnerFilter('p')}
+            WHERE i.is_deleted = 0 AND i.status NOT IN ('Paid', 'Rejected') AND ${inQuarter('i.received_date')} AND ${categoryOwnerFilter('p')}
         ),
         buckets AS (
             SELECT bucket, sort_order, min_days, max_days FROM (VALUES
@@ -330,7 +365,7 @@ export const getAttentionListService = async (filters: DashboardFilters) => {
         WHERE p.fy_id = @fy_id
           AND p.status IN ('Not Started', 'In Progress', 'In Review', 'On Hold')
           AND (p.is_overdue = 1 OR p.is_escalated = 1)
-          AND ${categoryOwnerFilter('p')}
+          AND ${procurementInQuarter('p')} AND ${categoryOwnerFilter('p')}
         ORDER BY p.is_escalated DESC, p.priority_rank DESC, (p.days_in_stage - p.sla_days) DESC;
     `);
     return result.recordset;
@@ -366,6 +401,191 @@ export const getYearComparisonService = async (filters: Omit<DashboardFilters, '
         contracted: Number(row.contracted),
         paid: Number(row.paid),
     }));
+};
+
+/**
+ * Every status, priority and method with its count, including those at zero, so
+ * the charts always show what exists even before there is data for it.
+ */
+export const getBreakdownsService = async (filters: DashboardFilters) => {
+    const result = await filteredRequest(filters).query(`
+        ${DECLARE_FY_DATES}
+
+        -- Base table, not the view: these counts need none of the view's joins
+        SELECT p.status, p.priority_id, p.acquisition_method_id
+        FROM dbo.Procurements p
+        WHERE p.is_deleted = 0 AND p.fy_id = @fy_id AND ${procurementInQuarter('p')} AND ${categoryOwnerFilter('p')};
+
+        SELECT lookup_id, lookup_type, value
+        FROM dbo.Lookups
+        WHERE lookup_type IN ('priority', 'acquisition_method') AND is_active = 1
+        ORDER BY sort_order;
+
+        SELECT c.status AS name, COUNT(*) AS value
+        FROM dbo.Contracts c
+        JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
+        WHERE c.is_deleted = 0 AND p.fy_id = @fy_id AND ${inQuarter('c.start_date')} AND ${categoryOwnerFilter('p')}
+        GROUP BY c.status;
+
+        SELECT i.status AS name, COUNT(*) AS value
+        FROM dbo.Invoices i
+        JOIN dbo.Contracts c    ON c.contract_id = i.contract_id AND c.is_deleted = 0
+        JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
+        WHERE i.is_deleted = 0 AND p.fy_id = @fy_id AND ${inQuarter('i.received_date')} AND ${categoryOwnerFilter('p')}
+        GROUP BY i.status;
+
+        SELECT t.status AS name, COUNT(*) AS value
+        FROM dbo.Tasks t
+        WHERE t.is_deleted = 0 AND (@owner_id IS NULL OR t.owner_id = @owner_id)
+          AND ${inQuarter('COALESCE(t.due_date, CAST(t.created_at AS DATE))')}
+        GROUP BY t.status;
+    `);
+
+    const [procurements, lookups, contracts, invoices, tasks] = result.recordsets as sql.IRecordSet<any>[];
+
+    // One row per value of a lookup, with its id for links, then "Not set" for the blanks
+    const countByLookup = (type: string, column: 'priority_id' | 'acquisition_method_id') => [
+        ...lookups
+            .filter((lookup) => lookup.lookup_type === type)
+            .map((lookup) => ({ id: lookup.lookup_id as number, name: lookup.value as string, value: procurements.filter((p) => p[column] === lookup.lookup_id).length })),
+        { id: null, name: 'Not set', value: procurements.filter((p) => p[column] === null).length },
+    ];
+    const status = PROCUREMENT_STATUSES.map((name) => ({ name, value: procurements.filter((p) => p.status === name).length }));
+
+    // Fills in the statuses with no rows yet, in their fixed order
+    const allOf = (names: readonly string[], rows: { name: string; value: number }[]) =>
+        names.map((name) => ({ name, value: rows.find((row) => row.name === name)?.value ?? 0 }));
+
+    return {
+        status,
+        priority: countByLookup('priority', 'priority_id'),
+        method: countByLookup('acquisition_method', 'acquisition_method_id'),
+        contract_status: allOf(['Active', 'Completed', 'Expired', 'Terminated'], contracts),
+        invoice_status: allOf(['Received', 'Verified', 'Approved', 'Paid', 'Rejected'], invoices),
+        task_status: allOf(TASK_STATUSES, tasks),
+    };
+};
+
+/**
+ * The tracker's own Dashboard sheet, worked out the same way from its All list:
+ * memos, follow-up activities (T-00x sections) and tasks. A T-00x procurement
+ * with the same reference as a memo is that memo, so it only counts once.
+ */
+export const getActivitySummaryService = async (filters: DashboardFilters) => {
+    const result = await filteredRequest(filters).query(`
+        ${DECLARE_FY_DATES}
+
+        WITH activities AS (
+            SELECT m.status, pr.value AS priority, 0 AS is_escalated,
+                   CASE WHEN m.approved_date < CAST(SYSDATETIME() AS DATE) AND m.status <> 'Completed' THEN 1 ELSE 0 END AS is_overdue
+            FROM dbo.Memos m
+            LEFT JOIN dbo.Lookups pr ON pr.lookup_id = m.priority_id
+            WHERE m.is_deleted = 0 AND m.fy_id = @fy_id AND ${inQuarter('m.delivered_date')} AND ${categoryOwnerFilter('m')}
+            UNION ALL
+            SELECT p.status, p.priority, CAST(p.is_escalated AS INT), 0
+            FROM dbo.vw_Procurements p
+            WHERE p.fy_id = @fy_id AND p.section LIKE 'T-%' AND ${procurementInQuarter('p')} AND ${categoryOwnerFilter('p')}
+              AND NOT EXISTS (SELECT 1 FROM dbo.Memos m WHERE m.reference = p.reference AND m.is_deleted = 0)
+            UNION ALL
+            SELECT CASE t.status WHEN 'Open' THEN 'Not Started' WHEN 'Done' THEN 'Completed' ELSE t.status END,
+                   pr.value, 0, 0
+            FROM dbo.Tasks t
+            LEFT JOIN dbo.Lookups pr ON pr.lookup_id = t.priority_id
+            WHERE t.is_deleted = 0 AND @category_id IS NULL AND (@owner_id IS NULL OR t.owner_id = @owner_id)
+              AND COALESCE(t.due_date, CAST(t.created_at AS DATE)) BETWEEN @start AND @end
+        )
+        SELECT status, priority, is_escalated, is_overdue FROM activities;
+    `);
+
+    const rows = result.recordset as { status: string; priority: string | null; is_escalated: number; is_overdue: number }[];
+    const countBy = (names: readonly string[], key: 'status' | 'priority') =>
+        names.map((name) => ({ name, value: rows.filter((row) => row[key] === name).length }));
+    const completed = rows.filter((row) => row.status === 'Completed').length;
+
+    return {
+        total: rows.length,
+        completed,
+        by_status: countBy(['Not Started', 'In Progress', 'Cancelled', 'In Review', 'Completed', 'On Hold', 'Rejected'], 'status'),
+        by_priority: countBy(['Low', 'Medium', 'High', 'Critical'], 'priority'),
+        overdue: rows.filter((row) => row.is_overdue === 1).length,
+        escalated: rows.filter((row) => row.is_escalated === 1).length,
+        completion_rate_percent: rows.length > 0 ? round1((completed / rows.length) * 100) : 0,
+    };
+};
+
+/** Invoices received and payments made in each month of the financial year. */
+export const getMonthlyTrendService = async (filters: DashboardFilters) => {
+    const result = await filteredRequest(filters).query(`
+        ${DECLARE_FULL_YEAR}
+
+        SELECT DATEDIFF(MONTH, @start, i.received_date) AS month_index, SUM(i.amount) AS amount
+        FROM dbo.Invoices i
+        JOIN dbo.Contracts c    ON c.contract_id = i.contract_id AND c.is_deleted = 0
+        JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
+        WHERE i.is_deleted = 0 AND i.status <> 'Rejected' AND i.received_date BETWEEN @start AND @end AND ${categoryOwnerFilter('p')}
+        GROUP BY DATEDIFF(MONTH, @start, i.received_date);
+
+        SELECT DATEDIFF(MONTH, @start, pay.payment_date) AS month_index, SUM(pay.amount) AS amount
+        ${PAYMENTS_WITH_PROCUREMENT}
+          AND pay.payment_date BETWEEN @start AND @end AND ${categoryOwnerFilter('p')}
+        GROUP BY DATEDIFF(MONTH, @start, pay.payment_date);
+
+        SELECT CONVERT(CHAR(10), @start, 23) AS start_date;
+    `);
+
+    const [invoiced, paid, fyStart] = result.recordsets as sql.IRecordSet<any>[];
+    const amountIn = (rows: { month_index: number; amount: unknown }[], index: number) =>
+        Number(rows.find((row) => row.month_index === index)?.amount ?? 0);
+
+    // Financial years run July to June
+    return ['Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'].map((month, index) => ({
+        month,
+        ...periodOf(fyStart[0].start_date, index, 1),
+        invoiced: amountIn(invoiced, index),
+        paid: amountIn(paid, index),
+    })).filter((_, index) => !filters.quarter || Math.floor(index / 3) + 1 === filters.quarter);
+};
+
+/** The largest budget lines of the year, for the ranked chart. */
+export const getTopBudgetLinesService = async (filters: DashboardFilters) => {
+    const result = await filteredRequest(filters).query(`
+        SELECT TOP 8 bl.budget_line_id, bl.code, bl.description, ${plannedAmount('a')} AS planned_amount
+        FROM dbo.BudgetAllocations a
+        JOIN dbo.BudgetLines bl ON bl.budget_line_id = a.budget_line_id AND bl.is_deleted = 0
+        WHERE a.fy_id = @fy_id AND ${plannedAmount('a')} > 0 AND ${categoryOwnerFilter('bl')}
+        ORDER BY ${plannedAmount('a')} DESC, bl.code;
+    `);
+    return result.recordset.map((row) => ({ ...row, planned_amount: Number(row.planned_amount) }));
+};
+
+/** The latest step updates and payments. */
+export const getRecentActivityService = async (filters: DashboardFilters) => {
+    const result = await filteredRequest(filters).query(`
+        SELECT TOP 6 e.event_id, e.procurement_id, p.title, ws.name AS stage_name, e.status, e.event_date, u.full_name AS recorded_by_name
+        FROM dbo.StageEvents e
+        JOIN dbo.Procurements p    ON p.procurement_id = e.procurement_id AND p.is_deleted = 0
+        JOIN dbo.WorkflowStages ws ON ws.stage_id = e.stage_id
+        JOIN dbo.Users u           ON u.user_id = e.recorded_by
+        WHERE p.fy_id = @fy_id AND ${inQuarter('e.event_date')} AND ${categoryOwnerFilter('p')}
+        ORDER BY e.event_date DESC, e.event_id DESC;
+
+        SELECT TOP 6 pay.payment_id, pay.amount, pay.payment_date, pay.reference, c.supplier_name, i.invoice_id, i.invoice_number
+        ${PAYMENTS_WITH_PROCUREMENT}
+          AND p.fy_id = @fy_id AND ${inQuarter('pay.payment_date')} AND ${categoryOwnerFilter('p')}
+        ORDER BY pay.payment_date DESC, pay.payment_id DESC;
+    `);
+    const [steps, payments] = result.recordsets as sql.IRecordSet<any>[];
+    return { steps, payments: payments.map((row) => ({ ...row, amount: Number(row.amount) })) };
+};
+
+// First and last day of a period of `months` months, starting `offset` months into the year
+const periodOf = (fyStart: string, offset: number, months: number) => {
+    const [year, month] = fyStart.split('-').map(Number) as [number, number];
+    const toIso = (date: Date) => date.toISOString().slice(0, 10);
+    return {
+        from_date: toIso(new Date(Date.UTC(year, month - 1 + offset, 1))),
+        to_date: toIso(new Date(Date.UTC(year, month - 1 + offset + months, 0))),
+    };
 };
 
 // Rounds to one decimal place

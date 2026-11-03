@@ -19,6 +19,11 @@ dashboardRoutes.get('/officer-workload', dashboardControllers.getOfficerWorkload
 dashboardRoutes.get('/invoice-ageing', dashboardControllers.getInvoiceAgeing);
 dashboardRoutes.get('/expiring-contracts', dashboardControllers.getExpiringContracts);
 dashboardRoutes.get('/attention', dashboardControllers.getAttentionList);
+dashboardRoutes.get('/breakdowns', dashboardControllers.getBreakdowns);
+dashboardRoutes.get('/activity-summary', dashboardControllers.getActivitySummary);
+dashboardRoutes.get('/monthly-trend', dashboardControllers.getMonthlyTrend);
+dashboardRoutes.get('/top-budget-lines', dashboardControllers.getTopBudgetLines);
+dashboardRoutes.get('/recent-activity', dashboardControllers.getRecentActivity);
 dashboardRoutes.get('/year-comparison', dashboardControllers.getYearComparison);
 
 export default dashboardRoutes;

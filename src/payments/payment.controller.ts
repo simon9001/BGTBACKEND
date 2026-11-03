@@ -5,6 +5,8 @@ import { CreatePaymentSchema, PaymentQuerySchema } from '../validators/invoice.v
 import { getInvoiceRowService } from '../invoices/invoice.service.js';
 import { assertCanEdit } from '../utils/access.js';
 import { HttpError } from '../utils/http-error.js';
+import { cached } from '../utils/cache.js';
+import { quarterDates } from '../financial-years/financialYear.service.js';
 import { buildPagination } from '../utils/pagination.js';
 import * as paymentServices from './payment.service.js';
 
@@ -16,7 +18,8 @@ import * as paymentServices from './payment.service.js';
 // GET /api/payments
 export const listPayments = async (c: Context<AppEnv>) => {
     const query = validateQuery(c, PaymentQuerySchema);
-    const { total, totalAmount, rows } = await paymentServices.listPaymentsService(query);
+    const dates = await quarterDates(query.fy_id, query.quarter);
+    const { total, totalAmount, rows } = await cached(`payments:${JSON.stringify(query)}`, () => paymentServices.listPaymentsService({ ...query, ...dates }));
     return c.json({
         success: true,
         data: rows,

@@ -8,7 +8,7 @@ import { isoDate } from './common.validators.js';
 
 // ------------------------------- Lookups -------------------------------------
 
-export const LOOKUP_TYPES = ['category', 'priority', 'acquisition_method', 'scm_officer'] as const;
+export const LOOKUP_TYPES = ['category', 'priority', 'acquisition_method', 'scm_officer', 'section'] as const;
 export type LookupType = (typeof LOOKUP_TYPES)[number];
 
 export const LookupQuerySchema = z.object({

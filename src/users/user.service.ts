@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import { cached } from '../utils/cache.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import type { AuthUser } from '../types/hono.js';
@@ -30,7 +31,9 @@ export const getAllUsersService = async (): Promise<User[]> => {
 };
 
 // Active users, minimal fields - for dropdowns and filters
-export const getUserDirectoryService = async (): Promise<Pick<User, 'user_id' | 'full_name' | 'role'>[]> => {
+export const getUserDirectoryService = () => cached('users:directory', loadUserDirectory);
+
+const loadUserDirectory = async (): Promise<Pick<User, 'user_id' | 'full_name' | 'role'>[]> => {
     const db = getDbPool();
     const result = await db.request()
         .query(`SELECT user_id, full_name, role FROM dbo.Users WHERE is_active = 1 ORDER BY full_name`);
@@ -47,7 +50,9 @@ export const getUserByIdService = async (userId: number): Promise<User | null> =
 };
 
 // Get an active user in the shape stored on the request context (used by requireAuth)
-export const getActiveUserByIdService = async (userId: number): Promise<AuthUser | null> => {
+export const getActiveUserByIdService = (userId: number) => cached(`users:active:${userId}`, () => loadActiveUserById(userId));
+
+const loadActiveUserById = async (userId: number): Promise<AuthUser | null> => {
     const db = getDbPool();
     const result = await db.request()
         .input('user_id', sql.Int, userId)

@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit",
     "db:migrate": "tsx src/db/migrate.ts",
     "db:seed-admin": "tsx src/db/seed-admin.ts",
+    "db:seed-sa": "tsx src/db/seed-sa.ts",
     "db:seed-tracker": "tsx src/db/seed-tracker.ts"
   },
   "dependencies": {

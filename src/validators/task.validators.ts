@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { queryQuarter } from './common.validators.js';
 import { PaginationQuerySchema, id, isoDate, optionalText, queryId } from './common.validators.js';
 
 /**
@@ -12,6 +13,7 @@ export const CreateTaskSchema = z.object({
     description: optionalText(4000),
     owner_id: id.optional(),              // admin only; officers create tasks for themselves
     procurement_id: id.nullish(),
+    section_id: id.nullish(),
     priority_id: id.nullish(),
     due_date: isoDate.nullish(),
     status: z.enum(TASK_STATUSES).default('Open'),
@@ -22,12 +24,15 @@ export const UpdateTaskSchema = z.object({
     description: optionalText(4000).optional(),
     owner_id: id.optional(),              // admin only
     procurement_id: id.nullish(),
+    section_id: id.nullish(),
     priority_id: id.nullish(),
     due_date: isoDate.nullish(),
     status: z.enum(TASK_STATUSES).optional(),
 });
 
 export const TaskQuerySchema = PaginationQuerySchema.extend({
+    quarter: queryQuarter,
+    fy_id: queryId,             // the year the quarter belongs to (default: current)
     owner_id: queryId,
     procurement_id: queryId,
     status: z.enum(TASK_STATUSES).optional(),

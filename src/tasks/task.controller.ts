@@ -6,6 +6,8 @@ import { assertLookups } from '../lookups/lookup.service.js';
 import { getProcurementRowService } from '../procurements/procurement.service.js';
 import { assertCanEdit } from '../utils/access.js';
 import { HttpError } from '../utils/http-error.js';
+import { cached } from '../utils/cache.js';
+import { quarterDates } from '../financial-years/financialYear.service.js';
 import { buildPagination } from '../utils/pagination.js';
 import * as taskServices from './task.service.js';
 
@@ -22,8 +24,11 @@ const findTaskOrFail = async (taskId: number) => {
 };
 
 // Validates optional references in a task body
-const checkReferences = async (input: { procurement_id?: number | null; priority_id?: number | null }) => {
-    await assertLookups([{ field: 'priority_id', id: input.priority_id, type: 'priority' }]);
+const checkReferences = async (input: { procurement_id?: number | null; priority_id?: number | null; section_id?: number | null }) => {
+    await assertLookups([
+        { field: 'priority_id', id: input.priority_id, type: 'priority' },
+        { field: 'section_id', id: input.section_id, type: 'section' },
+    ]);
     if (input.procurement_id != null && !(await getProcurementRowService(input.procurement_id))) {
         throw new HttpError(400, 'procurement_id does not match an existing procurement');
     }
@@ -32,7 +37,9 @@ const checkReferences = async (input: { procurement_id?: number | null; priority
 // GET /api/tasks
 export const listTasks = async (c: Context<AppEnv>) => {
     const query = validateQuery(c, TaskQuerySchema);
-    const { total, rows } = await taskServices.listTasksService(query, c.get('user').user_id);
+    const userId = c.get('user').user_id;
+    const dates = await quarterDates(query.fy_id, query.quarter);
+    const { total, rows } = await cached(`tasks:${userId}:${JSON.stringify(query)}`, () => taskServices.listTasksService({ ...query, ...dates }, userId));
     return c.json({ success: true, data: rows, pagination: buildPagination(query.page, query.limit, total) });
 };
 

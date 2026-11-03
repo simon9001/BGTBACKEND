@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { queryId } from './common.validators.js';
+import { queryId, queryQuarter } from './common.validators.js';
 
 /**
  * Dashboard query validators.
@@ -11,11 +11,14 @@ export const DashboardQuerySchema = z.object({
     fy_id: queryId,
     category_id: queryId,
     owner_id: queryId,
+    quarter: queryQuarter,
 });
 
 export const ExpiringContractsQuerySchema = DashboardQuerySchema.extend({
     days: z.coerce.number().int().positive().max(730).default(90),
 });
+
+export const TrackerQuerySchema = z.object({ fy_id: queryId });
 
 export type DashboardQuery = z.infer<typeof DashboardQuerySchema>;
 
@@ -24,4 +27,7 @@ export interface DashboardFilters {
     fy_id: number;
     category_id?: number;
     owner_id?: number;
+    quarter?: number;
+    quarter_from?: string;   // first and last day of the quarter, set with quarter
+    quarter_to?: string;
 }

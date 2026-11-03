@@ -5,7 +5,7 @@
  * fully typed in controllers after the auth middleware has run.
  */
 
-export type UserRole = 'admin' | 'officer' | 'viewer';
+export type UserRole = 'sa' | 'admin' | 'officer' | 'viewer';
 
 /** The logged-in user, attached to the request context by `requireAuth`. */
 export interface AuthUser {

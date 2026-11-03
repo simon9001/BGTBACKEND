@@ -25,6 +25,7 @@ export interface BudgetLineRow {
     description: string;
     category_id: number;
     priority_id: number | null;
+    section_id: number | null;
     owner_id: number;
     quantity: number;
     unit_price: number;
@@ -32,13 +33,14 @@ export interface BudgetLineRow {
     notes: string | null;
 }
 
-const ROW_COLUMNS = 'budget_line_id, code, description, category_id, priority_id, owner_id, quantity, unit_price, total_amount, notes';
+const ROW_COLUMNS = 'budget_line_id, code, description, category_id, priority_id, section_id, owner_id, quantity, unit_price, total_amount, notes';
 
 // SELECT list shared by the list and detail queries (display names included)
 const DISPLAY_SELECT = `
     bl.budget_line_id, bl.code, bl.description,
     bl.category_id, cat.value AS category,
     bl.priority_id, pr.value AS priority,
+    bl.section_id, sec.value AS section,
     bl.owner_id, u.full_name AS owner_name,
     bl.quantity, bl.unit_price, bl.total_amount, bl.notes, bl.created_at, bl.updated_at,
     (SELECT ISNULL(SUM(a.planned_amount), 0) FROM dbo.BudgetAllocations a WHERE a.budget_line_id = bl.budget_line_id) AS allocated_amount`;
@@ -47,6 +49,7 @@ const DISPLAY_JOINS = `
     FROM dbo.BudgetLines bl
     JOIN dbo.Lookups cat     ON cat.lookup_id = bl.category_id
     LEFT JOIN dbo.Lookups pr ON pr.lookup_id = bl.priority_id
+    LEFT JOIN dbo.Lookups sec ON sec.lookup_id = bl.section_id
     JOIN dbo.Users u         ON u.user_id = bl.owner_id`;
 
 // ------------------------------- Queries -------------------------------------
@@ -58,12 +61,14 @@ export const listBudgetLinesService = async (query: BudgetLineQuery) => {
         LEFT JOIN dbo.BudgetAllocations fa ON fa.budget_line_id = bl.budget_line_id AND fa.fy_id = @fy_id
         WHERE bl.is_deleted = 0
           AND (@fy_id IS NULL OR fa.allocation_id IS NOT NULL)
+          AND (@quarter IS NULL OR CASE @quarter WHEN 1 THEN fa.q1_amount WHEN 2 THEN fa.q2_amount WHEN 3 THEN fa.q3_amount ELSE fa.q4_amount END > 0)
           AND (@category_id IS NULL OR bl.category_id = @category_id)
           AND (@owner_id IS NULL OR bl.owner_id = @owner_id)
           AND (@search IS NULL OR bl.description LIKE '%' + @search + '%' OR bl.code LIKE '%' + @search + '%')`;
 
     const result = await db.request()
         .input('fy_id', sql.Int, query.fy_id ?? null)
+        .input('quarter', sql.Int, query.quarter ?? null)
         .input('category_id', sql.Int, query.category_id ?? null)
         .input('owner_id', sql.Int, query.owner_id ?? null)
         .input('search', sql.NVarChar(100), query.search ?? null)
@@ -177,14 +182,15 @@ export const createBudgetLineService = async (
             .input('description', sql.NVarChar(500), input.description)
             .input('category_id', sql.Int, input.category_id)
             .input('priority_id', sql.Int, input.priority_id ?? null)
+            .input('section_id', sql.Int, input.section_id ?? null)
             .input('owner_id', sql.Int, input.owner_id)
             .input('quantity', sql.Int, input.quantity)
             .input('unit_price', sql.Decimal(18, 2), input.unit_price)
             .input('notes', sql.NVarChar(sql.MAX), input.notes)
             .input('created_by', sql.Int, actorId)
-            .query(`INSERT INTO dbo.BudgetLines (code, description, category_id, priority_id, owner_id, quantity, unit_price, notes, created_by)
+            .query(`INSERT INTO dbo.BudgetLines (code, description, category_id, priority_id, section_id, owner_id, quantity, unit_price, notes, created_by)
                     OUTPUT INSERTED.budget_line_id
-                    VALUES (@code, @description, @category_id, @priority_id, @owner_id, @quantity, @unit_price, @notes, @created_by)`);
+                    VALUES (@code, @description, @category_id, @priority_id, @section_id, @owner_id, @quantity, @unit_price, @notes, @created_by)`);
 
         const budgetLineId: number = result.recordset[0].budget_line_id;
         for (const allocation of input.allocations) {
@@ -211,12 +217,13 @@ export const updateBudgetLineService = async (before: BudgetLineRow, input: Upda
             .input('description', sql.NVarChar(500), input.description ?? before.description)
             .input('category_id', sql.Int, input.category_id ?? before.category_id)
             .input('priority_id', sql.Int, input.priority_id === undefined ? before.priority_id : input.priority_id)
+            .input('section_id', sql.Int, input.section_id === undefined ? before.section_id : input.section_id)
             .input('owner_id', sql.Int, input.owner_id ?? before.owner_id)
             .input('quantity', sql.Int, quantity)
             .input('unit_price', sql.Decimal(18, 2), unitPrice)
             .input('notes', sql.NVarChar(sql.MAX), input.notes === undefined ? before.notes : input.notes)
             .query(`UPDATE dbo.BudgetLines
-                    SET code = @code, description = @description, category_id = @category_id, priority_id = @priority_id,
+                    SET code = @code, description = @description, category_id = @category_id, priority_id = @priority_id, section_id = @section_id,
                         owner_id = @owner_id, quantity = @quantity, unit_price = @unit_price, notes = @notes,
                         updated_at = SYSUTCDATETIME()
                     OUTPUT ${ROW_COLUMNS.split(', ').map((col) => `INSERTED.${col}`).join(', ')}

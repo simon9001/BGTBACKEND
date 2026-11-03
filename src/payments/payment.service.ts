@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import type { QuarterRange } from '../validators/common.validators.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { syncInvoicePaidStatus } from '../invoices/invoice.service.js';
@@ -29,7 +30,7 @@ export interface PaymentRow {
 }
 
 // Paginated, filterable list of payments
-export const listPaymentsService = async (query: PaymentQuery) => {
+export const listPaymentsService = async (query: PaymentQuery & QuarterRange) => {
     const db = getDbPool();
     const from = `
         FROM dbo.Payments pay
@@ -42,13 +43,20 @@ export const listPaymentsService = async (query: PaymentQuery) => {
           AND (@invoice_id IS NULL OR pay.invoice_id = @invoice_id)
           AND (@contract_id IS NULL OR i.contract_id = @contract_id)
           AND (@fy_id IS NULL OR pay.payment_date BETWEEN fy.start_date AND fy.end_date)
+          AND (@quarter_from IS NULL OR pay.payment_date BETWEEN @quarter_from AND @quarter_to)
+          AND (@category_id IS NULL OR p.category_id = @category_id)
+          AND (@owner_id IS NULL OR p.owner_id = @owner_id)
           AND (@paid_from IS NULL OR pay.payment_date >= @paid_from)
           AND (@paid_to IS NULL OR pay.payment_date <= @paid_to)`;
 
     const result = await db.request()
         .input('invoice_id', sql.Int, query.invoice_id ?? null)
         .input('contract_id', sql.Int, query.contract_id ?? null)
+        .input('quarter_from', sql.Date, query.quarter_from ?? null)
+        .input('quarter_to', sql.Date, query.quarter_to ?? null)
         .input('fy_id', sql.Int, query.fy_id ?? null)
+        .input('category_id', sql.Int, query.category_id ?? null)
+        .input('owner_id', sql.Int, query.owner_id ?? null)
         .input('paid_from', sql.Date, query.paid_from ?? null)
         .input('paid_to', sql.Date, query.paid_to ?? null)
         .input('offset', sql.Int, toOffset(query.page, query.limit))

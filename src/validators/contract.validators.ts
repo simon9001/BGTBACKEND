@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { queryQuarter } from './common.validators.js';
 import { PaginationQuerySchema, id, isoDate, money, optionalText, queryId } from './common.validators.js';
 
 /**
@@ -37,8 +38,10 @@ export const UpdateContractSchema = z
     .refine(datesInOrder, datesMessage);
 
 export const ContractQuerySchema = PaginationQuerySchema.extend({
+    quarter: queryQuarter,
     procurement_id: queryId,
     fy_id: queryId,
+    category_id: queryId,
     owner_id: queryId,
     status: z.enum(CONTRACT_STATUSES).optional(),
     expiring_within_days: z.coerce.number().int().positive().max(3650).optional(),

@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import type { QuarterRange } from '../validators/common.validators.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
@@ -35,6 +36,7 @@ export interface ProcurementRow {
     priority_id: number | null;
     acquisition_method_id: number | null;
     scm_officer_id: number | null;
+    section_id: number | null;
     status: string;
     current_stage_id: number | null;
     stage_entered_at: Date | null;
@@ -47,7 +49,7 @@ export interface ProcurementRow {
 }
 
 const ROW_COLUMNS = `procurement_id, reference, title, budget_line_id, fy_id, owner_id, category_id, priority_id,
-    acquisition_method_id, scm_officer_id, status, current_stage_id, stage_entered_at,
+    acquisition_method_id, scm_officer_id, section_id, status, current_stage_id, stage_entered_at,
     CONVERT(CHAR(10), tender_float_date, 23) AS tender_float_date,
     CONVERT(CHAR(10), tender_opening_date, 23) AS tender_opening_date,
     is_escalated, escalated_to, escalation_note, notes`;
@@ -63,7 +65,7 @@ const SORTS: Record<ProcurementQuery['sort'], string> = {
 // ------------------------------- Queries -------------------------------------
 
 // Paginated, filterable list of procurements
-export const listProcurementsService = async (query: ProcurementQuery, currentUserId: number) => {
+export const listProcurementsService = async (query: ProcurementQuery & QuarterRange, currentUserId: number) => {
     const db = getDbPool();
     const where = `
         WHERE (@fy_id IS NULL OR fy_id = @fy_id)
@@ -72,17 +74,42 @@ export const listProcurementsService = async (query: ProcurementQuery, currentUs
           AND (@owner_id IS NULL OR owner_id = @owner_id)
           AND (@stage_id IS NULL OR current_stage_id = @stage_id)
           AND (@budget_line_id IS NULL OR budget_line_id = @budget_line_id)
+          AND (@quarter_from IS NULL OR EXISTS (
+                SELECT 1 FROM dbo.StageEvents qe
+                WHERE qe.procurement_id = dbo.vw_Procurements.procurement_id AND qe.event_date BETWEEN @quarter_from AND @quarter_to))
+          AND (@priority_id IS NULL OR priority_id = @priority_id)
+          AND (@no_priority IS NULL OR @no_priority = 0 OR priority_id IS NULL)
+          AND (@acquisition_method_id IS NULL OR acquisition_method_id = @acquisition_method_id)
+          AND (@no_method IS NULL OR @no_method = 0 OR acquisition_method_id IS NULL)
+          AND (@stage_group IS NULL OR current_stage_group = @stage_group)
+          AND (@no_stage IS NULL OR @no_stage = 0 OR current_stage_id IS NULL)
+          AND (@passed_stage_id IS NULL OR EXISTS (
+                SELECT 1 FROM dbo.StageEvents e
+                WHERE e.procurement_id = dbo.vw_Procurements.procurement_id AND e.stage_id = @passed_stage_id AND e.status IN ('Approved', 'Completed')))
+          AND (@open_only IS NULL OR @open_only = 0 OR status IN ('Not Started', 'In Progress', 'In Review', 'On Hold'))
+          AND (@statuses IS NULL OR status IN (SELECT value FROM STRING_SPLIT(@statuses, ',')))
           AND (@is_escalated IS NULL OR is_escalated = @is_escalated)
           AND (@overdue IS NULL OR is_overdue = @overdue)
           AND (@search IS NULL OR title LIKE '%' + @search + '%' OR reference LIKE '%' + @search + '%')`;
 
     const result = await db.request()
+        .input('quarter_from', sql.Date, query.quarter_from ?? null)
+        .input('quarter_to', sql.Date, query.quarter_to ?? null)
         .input('fy_id', sql.Int, query.fy_id ?? null)
         .input('status', sql.NVarChar(20), query.status ?? null)
         .input('category_id', sql.Int, query.category_id ?? null)
         .input('owner_id', sql.Int, query.mine ? currentUserId : (query.owner_id ?? null))
         .input('stage_id', sql.Int, query.stage_id ?? null)
         .input('budget_line_id', sql.Int, query.budget_line_id ?? null)
+        .input('priority_id', sql.Int, query.priority_id ?? null)
+        .input('no_priority', sql.Bit, query.no_priority ?? null)
+        .input('acquisition_method_id', sql.Int, query.acquisition_method_id ?? null)
+        .input('no_method', sql.Bit, query.no_method ?? null)
+        .input('stage_group', sql.NVarChar(30), query.stage_group ?? null)
+        .input('no_stage', sql.Bit, query.no_stage ?? null)
+        .input('passed_stage_id', sql.Int, query.passed_stage_id ?? null)
+        .input('open_only', sql.Bit, query.open_only ?? null)
+        .input('statuses', sql.NVarChar(100), query.statuses ?? null)
         .input('is_escalated', sql.Bit, query.is_escalated ?? null)
         .input('overdue', sql.Bit, query.overdue ?? null)
         .input('search', sql.NVarChar(100), query.search ?? null)
@@ -155,6 +182,7 @@ const bindProcurementFields = (request: sql.Request, p: Omit<ProcurementRow, 'pr
         .input('priority_id', sql.Int, p.priority_id)
         .input('acquisition_method_id', sql.Int, p.acquisition_method_id)
         .input('scm_officer_id', sql.Int, p.scm_officer_id)
+        .input('section_id', sql.Int, p.section_id)
         .input('status', sql.NVarChar(20), p.status)
         .input('tender_float_date', sql.Date, p.tender_float_date)
         .input('tender_opening_date', sql.Date, p.tender_opening_date)
@@ -179,6 +207,7 @@ export const createProcurementService = async (
             priority_id: input.priority_id ?? null,
             acquisition_method_id: input.acquisition_method_id ?? null,
             scm_officer_id: input.scm_officer_id ?? null,
+            section_id: input.section_id ?? null,
             status: input.status,
             tender_float_date: input.tender_float_date ?? null,
             tender_opening_date: input.tender_opening_date ?? null,
@@ -192,11 +221,11 @@ export const createProcurementService = async (
             .input('created_by', sql.Int, actorId)
             .query(`INSERT INTO dbo.Procurements
                         (reference, title, budget_line_id, fy_id, owner_id, category_id, priority_id, acquisition_method_id,
-                         scm_officer_id, status, tender_float_date, tender_opening_date, is_escalated, escalated_to,
+                         scm_officer_id, section_id, status, tender_float_date, tender_opening_date, is_escalated, escalated_to,
                          escalation_note, notes, created_by)
                     OUTPUT INSERTED.procurement_id
                     VALUES (@reference, @title, @budget_line_id, @fy_id, @owner_id, @category_id, @priority_id, @acquisition_method_id,
-                            @scm_officer_id, @status, @tender_float_date, @tender_opening_date, @is_escalated, @escalated_to,
+                            @scm_officer_id, @section_id, @status, @tender_float_date, @tender_opening_date, @is_escalated, @escalated_to,
                             @escalation_note, @notes, @created_by)`);
 
         const procurementId: number = result.recordset[0].procurement_id;
@@ -221,6 +250,7 @@ export const updateProcurementService = async (before: ProcurementRow, input: Up
         priority_id: pick('priority_id'),
         acquisition_method_id: pick('acquisition_method_id'),
         scm_officer_id: pick('scm_officer_id'),
+        section_id: pick('section_id'),
         status: pick('status'),
         tender_float_date: pick('tender_float_date'),
         tender_opening_date: pick('tender_opening_date'),
@@ -246,7 +276,7 @@ export const updateProcurementService = async (before: ProcurementRow, input: Up
             .query(`UPDATE dbo.Procurements
                     SET reference = @reference, title = @title, budget_line_id = @budget_line_id, fy_id = @fy_id,
                         owner_id = @owner_id, category_id = @category_id, priority_id = @priority_id,
-                        acquisition_method_id = @acquisition_method_id, scm_officer_id = @scm_officer_id, status = @status,
+                        acquisition_method_id = @acquisition_method_id, scm_officer_id = @scm_officer_id, section_id = @section_id, status = @status,
                         tender_float_date = @tender_float_date, tender_opening_date = @tender_opening_date,
                         is_escalated = @is_escalated, escalated_to = @escalated_to, escalation_note = @escalation_note,
                         notes = @notes, updated_at = SYSUTCDATETIME()

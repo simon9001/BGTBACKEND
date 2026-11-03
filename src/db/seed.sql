@@ -39,13 +39,43 @@
         ('scm_officer', 'Abdi Yusuf',        11),
         ('scm_officer', 'Elizabeth Karugia', 12),
         ('scm_officer', 'Joseph Kimaru',     13),
-        ('scm_officer', 'Gentrix Kipchumba', 14)
+        ('scm_officer', 'Gentrix Kipchumba', 14),
+        -- Sections: the shaded header rows of the tracker sheets. The value starts
+        -- with the section's id, which also says which sheet it belongs to.
+        ('section', 'T-001 - Memos to DG to request Procurement',  1),
+        ('section', 'T-002 - eGP Upload',                          2),
+        ('section', 'T-003 - eGP Upload',                          3),
+        ('section', 'T-004 - Follow up On 25/26 procurement',      4),
+        ('section', 'T-005 - Follow up on Invoice payment',        5),
+        ('section', 'T-006 - Follow up on EoT Contracts',          6),
+        ('section', 'T-007 - Follow up on New contracts Progress', 7),
+        ('section', 'A-001 - ICT Equipment',                       8),
+        ('section', 'A-002 - ICT Infrastructure',                  9),
+        ('section', 'A-003 - ICT Software',                       10),
+        ('section', 'M - ICT Maintenance and Support',            11),
+        ('section', 'C - ICT Consultancy Services',               12),
+        ('section', 'S - ICT Subscription & Support Services',    13)
     ) AS v (lookup_type, value, sort_order)
 )
 INSERT INTO dbo.Lookups (lookup_type, value, sort_order)
 SELECT s.lookup_type, s.value, s.sort_order
 FROM src s
 WHERE NOT EXISTS (SELECT 1 FROM dbo.Lookups l WHERE l.lookup_type = s.lookup_type AND l.value = s.value);
+GO
+
+/* ---- File existing rows under their section, using the id in their code ---- */
+UPDATE bl SET section_id = s.lookup_id
+FROM dbo.BudgetLines bl
+JOIN dbo.Lookups s ON s.lookup_type = 'section'
+ AND bl.code LIKE LEFT(s.value, CHARINDEX(' - ', s.value + ' - ') - 1) + '-%'
+WHERE bl.section_id IS NULL;
+GO
+
+UPDATE p SET section_id = s.lookup_id
+FROM dbo.Procurements p
+JOIN dbo.Lookups s ON s.lookup_type = 'section'
+ AND p.reference LIKE LEFT(s.value, CHARINDEX(' - ', s.value + ' - ') - 1) + '-%'
+WHERE p.section_id IS NULL;
 GO
 
 /* ------------------------- Financial years -------------------------------- */

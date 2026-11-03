@@ -27,8 +27,13 @@
     ],
     "memos": [
         {
+            "reference": "T-001-01",
             "title": "Example memo",
             "owner": "Example Officer",
+            "category": "ICT Equipment",
+            "priority": "High",
+            "status": "Completed",
+            "dgStatus": "Approved",
             "delivered": "2026-08-21",
             "approved": "2026-08-21",
             "lines": [
@@ -61,7 +66,8 @@
     "tasks": [
         {
             "title": "Example task",
-            "owner": null
+            "owner": null,
+            "section": "T-002"
         }
     ]
 }

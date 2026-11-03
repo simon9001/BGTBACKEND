@@ -23,6 +23,15 @@ export const money = z
 export const optionalText = (max: number) =>
     z.string().trim().max(max).nullish().transform((value) => (value ? value : null));
 
+/** Kenyan financial year quarter (1 = Jul-Sep ... 4 = Apr-Jun) read from the query string. */
+export const queryQuarter = z.coerce.number().int().min(1).max(4).optional();
+
+/** First and last day of the chosen quarter, worked out by the controller. */
+export interface QuarterRange {
+    quarter_from?: string;
+    quarter_to?: string;
+}
+
 /** Standard page / limit query parameters. */
 export const PaginationQuerySchema = z.object({
     page: z.coerce.number().int().positive().default(1),

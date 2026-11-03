@@ -11,6 +11,8 @@ import {
 import { assertLookups } from '../lookups/lookup.service.js';
 import { assertCanEdit } from '../utils/access.js';
 import { HttpError } from '../utils/http-error.js';
+import { cached } from '../utils/cache.js';
+import { quarterDates } from '../financial-years/financialYear.service.js';
 import { buildPagination } from '../utils/pagination.js';
 import * as procurementServices from './procurement.service.js';
 
@@ -34,19 +36,22 @@ const checkLookups = (input: Partial<UpdateProcurementInput>) =>
         { field: 'priority_id', id: input.priority_id, type: 'priority' },
         { field: 'acquisition_method_id', id: input.acquisition_method_id, type: 'acquisition_method' },
         { field: 'scm_officer_id', id: input.scm_officer_id, type: 'scm_officer' },
+        { field: 'section_id', id: input.section_id, type: 'section' },
     ]);
 
 // GET /api/procurements
 export const listProcurements = async (c: Context<AppEnv>) => {
     const query = validateQuery(c, ProcurementQuerySchema);
-    const { total, rows } = await procurementServices.listProcurementsService(query, c.get('user').user_id);
+    const userId = c.get('user').user_id;
+    const dates = await quarterDates(query.fy_id, query.quarter);
+    const { total, rows } = await cached(`procurements:${userId}:${JSON.stringify(query)}`, () => procurementServices.listProcurementsService({ ...query, ...dates }, userId));
     return c.json({ success: true, data: rows, pagination: buildPagination(query.page, query.limit, total) });
 };
 
 // GET /api/procurements/:id
 export const getProcurement = async (c: Context<AppEnv>) => {
     const procurementId = validateIdParam(c, 'id');
-    const procurement = await procurementServices.getProcurementDetailService(procurementId);
+    const procurement = await cached(`procurement:${procurementId}`, () => procurementServices.getProcurementDetailService(procurementId));
     if (!procurement) throw new HttpError(404, 'Procurement not found');
     return c.json({ success: true, data: procurement });
 };

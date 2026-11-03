@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import { cached } from '../utils/cache.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
@@ -21,14 +22,18 @@ export interface FinancialYear {
 const COLUMNS = 'fy_id, code, start_date, end_date, is_current';
 
 // All financial years, newest first
-export const getFinancialYearsService = async (): Promise<FinancialYear[]> => {
+export const getFinancialYearsService = () => cached('fy:all', loadFinancialYears);
+
+const loadFinancialYears = async (): Promise<FinancialYear[]> => {
     const db = getDbPool();
     const result = await db.request().query(`SELECT ${COLUMNS} FROM dbo.FinancialYears ORDER BY start_date DESC`);
     return result.recordset;
 };
 
 // One financial year
-export const getFinancialYearByIdService = async (fyId: number): Promise<FinancialYear | null> => {
+export const getFinancialYearByIdService = (fyId: number) => cached(`fy:${fyId}`, () => loadFinancialYearById(fyId));
+
+const loadFinancialYearById = async (fyId: number): Promise<FinancialYear | null> => {
     const db = getDbPool();
     const result = await db.request()
         .input('fy_id', sql.Int, fyId)
@@ -37,10 +42,29 @@ export const getFinancialYearByIdService = async (fyId: number): Promise<Financi
 };
 
 // The year flagged as current (null if none is set yet)
-export const getCurrentFinancialYearService = async (): Promise<FinancialYear | null> => {
+export const getCurrentFinancialYearService = () => cached('fy:current', loadCurrentFinancialYear);
+
+const loadCurrentFinancialYear = async (): Promise<FinancialYear | null> => {
     const db = getDbPool();
     const result = await db.request().query(`SELECT ${COLUMNS} FROM dbo.FinancialYears WHERE is_current = 1`);
     return result.recordset[0] ?? null;
+};
+
+/**
+ * First and last day of a quarter of a financial year (default: the current
+ * year), as ISO dates. Empty when no quarter is chosen.
+ */
+export const quarterDates = async (fyId: number | undefined, quarter: number | undefined) => {
+    if (!quarter) return {};
+    const fy = fyId ? await getFinancialYearByIdService(fyId) : await getCurrentFinancialYearService();
+    if (!fy) return {};
+
+    const start = new Date(fy.start_date);
+    const toIso = (date: Date) => date.toISOString().slice(0, 10);
+    return {
+        quarter_from: toIso(new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + (quarter - 1) * 3, 1))),
+        quarter_to: toIso(new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + quarter * 3, 0))),
+    };
 };
 
 // Throws 400 if the date range overlaps another year

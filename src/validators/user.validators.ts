@@ -10,7 +10,7 @@ const password = z
     .max(72, 'Password cannot exceed 72 characters') // bcrypt only uses the first 72 bytes
     .regex(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/, 'Password must contain an uppercase letter, a lowercase letter and a number');
 
-const role = z.enum(['admin', 'officer', 'viewer']);
+const role = z.enum(['sa', 'admin', 'officer', 'viewer']);
 
 // POST /api/auth/login
 export const LoginSchema = z.object({
@@ -24,7 +24,7 @@ export const ChangePasswordSchema = z.object({
     new_password: password,
 });
 
-// POST /api/users (admin creates staff accounts)
+// POST /api/users (the system administrator creates staff accounts)
 export const CreateUserSchema = z.object({
     full_name: z.string().trim().min(3, 'Full name must be at least 3 characters').max(150),
     email: z.email('Enter a valid email address').trim().toLowerCase(),
@@ -42,7 +42,7 @@ export const UpdateUserSchema = z.object({
     is_active: z.boolean().optional(),
 });
 
-// PUT /api/users/:id/reset-password (admin sets a new password for a user)
+// PUT /api/users/:id/reset-password (the system administrator sets a new password)
 export const ResetPasswordSchema = z.object({
     new_password: password,
 });

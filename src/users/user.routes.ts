@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import type { AppEnv } from '../types/hono.js';
-import { requireAuth, adminOnly } from '../middleware/bearAuth.js';
+import { requireAuth, saOnly } from '../middleware/bearAuth.js';
 import * as userControllers from './user.controller.js';
 
 // Mounted at /api/users (see index.ts)
@@ -14,18 +14,18 @@ userRoutes.get('/directory', userControllers.getUserDirectory);
 // ---- Staff account management: Head of ICT only ----
 
 // List all staff accounts
-userRoutes.get('/', adminOnly, userControllers.getAllUsers);
+userRoutes.get('/', saOnly, userControllers.getAllUsers);
 
 // Get one staff account
-userRoutes.get('/:id', adminOnly, userControllers.getUserById);
+userRoutes.get('/:id', saOnly, userControllers.getUserById);
 
 // Create a staff account
-userRoutes.post('/', adminOnly, userControllers.createUser);
+userRoutes.post('/', saOnly, userControllers.createUser);
 
 // Update name / email / phone / role / active flag
-userRoutes.put('/:id', adminOnly, userControllers.updateUser);
+userRoutes.put('/:id', saOnly, userControllers.updateUser);
 
 // Set a new password for a staff member
-userRoutes.put('/:id/reset-password', adminOnly, userControllers.resetPassword);
+userRoutes.put('/:id/reset-password', saOnly, userControllers.resetPassword);
 
 export default userRoutes;

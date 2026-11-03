@@ -47,9 +47,9 @@ export const updateUser = async (c: Context<AppEnv>) => {
     const input = await validateBody(c, UpdateUserSchema);
     const actor = c.get('user');
 
-    // Stop the Head of ICT from locking themselves out by accident
-    if (userId === actor.user_id && (input.is_active === false || (input.role && input.role !== 'admin'))) {
-        throw new HttpError(400, 'You cannot deactivate your own account or remove your own admin role');
+    // Stop the system administrator from locking themselves out by accident
+    if (userId === actor.user_id && (input.is_active === false || (input.role && input.role !== actor.role))) {
+        throw new HttpError(400, 'You cannot deactivate your own account or change your own role');
     }
 
     const user = await userServices.updateUserService(userId, input, actor.user_id);

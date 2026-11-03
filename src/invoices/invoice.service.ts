@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import type { QuarterRange } from '../validators/common.validators.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
@@ -53,14 +54,18 @@ const DISPLAY_JOINS = `
 // ------------------------------- Queries -------------------------------------
 
 // Paginated, filterable list of invoices with paid amount, balance and age
-export const listInvoicesService = async (query: InvoiceQuery) => {
+export const listInvoicesService = async (query: InvoiceQuery & QuarterRange) => {
     const db = getDbPool();
     const where = `
         WHERE i.is_deleted = 0
           AND (@contract_id IS NULL OR i.contract_id = @contract_id)
           AND (@procurement_id IS NULL OR c.procurement_id = @procurement_id)
           AND (@fy_id IS NULL OR p.fy_id = @fy_id)
+          AND (@quarter_from IS NULL OR i.received_date BETWEEN @quarter_from AND @quarter_to)
+          AND (@category_id IS NULL OR p.category_id = @category_id)
           AND (@owner_id IS NULL OR p.owner_id = @owner_id)
+          AND (@age_min IS NULL OR DATEDIFF(DAY, i.received_date, CAST(SYSDATETIME() AS DATE)) >= @age_min)
+          AND (@age_max IS NULL OR DATEDIFF(DAY, i.received_date, CAST(SYSDATETIME() AS DATE)) <= @age_max)
           AND (@status IS NULL OR i.status = @status)
           AND (@unpaid_only IS NULL OR @unpaid_only = 0 OR i.status NOT IN ('Paid', 'Rejected'))
           AND (@received_from IS NULL OR i.received_date >= @received_from)
@@ -70,7 +75,12 @@ export const listInvoicesService = async (query: InvoiceQuery) => {
     const result = await db.request()
         .input('contract_id', sql.Int, query.contract_id ?? null)
         .input('procurement_id', sql.Int, query.procurement_id ?? null)
+        .input('quarter_from', sql.Date, query.quarter_from ?? null)
+        .input('quarter_to', sql.Date, query.quarter_to ?? null)
         .input('fy_id', sql.Int, query.fy_id ?? null)
+        .input('category_id', sql.Int, query.category_id ?? null)
+        .input('age_min', sql.Int, query.age_min ?? null)
+        .input('age_max', sql.Int, query.age_max ?? null)
         .input('owner_id', sql.Int, query.owner_id ?? null)
         .input('status', sql.NVarChar(20), query.status ?? null)
         .input('unpaid_only', sql.Bit, query.unpaid_only ?? null)

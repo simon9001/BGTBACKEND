@@ -5,6 +5,8 @@ import { ContractQuerySchema, CreateContractSchema, UpdateContractSchema } from 
 import { getProcurementRowService } from '../procurements/procurement.service.js';
 import { assertCanEdit } from '../utils/access.js';
 import { HttpError } from '../utils/http-error.js';
+import { cached } from '../utils/cache.js';
+import { quarterDates } from '../financial-years/financialYear.service.js';
 import { buildPagination } from '../utils/pagination.js';
 import * as contractServices from './contract.service.js';
 
@@ -24,14 +26,15 @@ const findContractOrFail = async (contractId: number) => {
 // GET /api/contracts
 export const listContracts = async (c: Context<AppEnv>) => {
     const query = validateQuery(c, ContractQuerySchema);
-    const { total, rows } = await contractServices.listContractsService(query);
+    const dates = await quarterDates(query.fy_id, query.quarter);
+    const { total, rows } = await cached(`contracts:${JSON.stringify(query)}`, () => contractServices.listContractsService({ ...query, ...dates }));
     return c.json({ success: true, data: rows, pagination: buildPagination(query.page, query.limit, total) });
 };
 
 // GET /api/contracts/:id
 export const getContract = async (c: Context<AppEnv>) => {
     const contractId = validateIdParam(c, 'id');
-    const contract = await contractServices.getContractDetailService(contractId);
+    const contract = await cached(`contract:${contractId}`, () => contractServices.getContractDetailService(contractId));
     if (!contract) throw new HttpError(404, 'Contract not found');
     return c.json({ success: true, data: contract });
 };

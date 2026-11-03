@@ -10,6 +10,8 @@ import { dbLogger } from '../logger/logger.js';
  * connections.
  */
 
+const POOL_MIN = 5;
+
 export const sqlConfig: sql.config = {
     user: env.SQL_USER,
     password: env.SQL_PASSWORD,
@@ -20,8 +22,8 @@ export const sqlConfig: sql.config = {
     requestTimeout: 30000,
     pool: {
         max: 10,
-        min: 0,
-        idleTimeoutMillis: 30000,
+        min: POOL_MIN,           // opening a connection takes far longer than a query, so keep some ready
+        idleTimeoutMillis: 300000,
     },
     options: {
         encrypt: env.SQL_ENCRYPT,
@@ -44,6 +46,10 @@ const initDatabaseConnection = async (): Promise<sql.ConnectionPool> => {
     try {
         globalPool = await new sql.ConnectionPool(sqlConfig).connect();
         globalPool.on('error', (err) => dbLogger.error({ err }, 'Database pool error'));
+
+        // Open the minimum connections now, so the first visitors do not wait for them
+        const pool = globalPool;
+        await Promise.all(Array.from({ length: POOL_MIN }, () => pool.request().query('SELECT 1')));
         dbLogger.info({ server: env.SQL_SERVER, database: env.SQL_DATABASE }, 'Connected to MSSQL database');
         return globalPool;
     } catch (err) {

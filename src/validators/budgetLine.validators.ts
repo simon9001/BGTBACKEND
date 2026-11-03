@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { queryQuarter } from './common.validators.js';
 import { PaginationQuerySchema, id, money, optionalText, queryId } from './common.validators.js';
 import { sumAmounts, toCents } from '../utils/money.js';
 
@@ -29,6 +30,7 @@ export const CreateBudgetLineSchema = z
         description: z.string().trim().min(3).max(500),
         category_id: id,
         priority_id: id.nullish(),
+        section_id: id.nullish(),
         owner_id: id.optional(),          // admin only; officers always own what they create
         quantity: z.number().int().positive().default(1),
         unit_price: money,
@@ -45,6 +47,7 @@ export const UpdateBudgetLineSchema = z.object({
     description: z.string().trim().min(3).max(500).optional(),
     category_id: id.optional(),
     priority_id: id.nullish(),
+    section_id: id.nullish(),
     owner_id: id.optional(),              // admin only
     quantity: z.number().int().positive().optional(),
     unit_price: money.optional(),
@@ -52,6 +55,7 @@ export const UpdateBudgetLineSchema = z.object({
 });
 
 export const BudgetLineQuerySchema = PaginationQuerySchema.extend({
+    quarter: queryQuarter,
     fy_id: queryId,              // only lines with an allocation in this year
     category_id: queryId,
     owner_id: queryId,

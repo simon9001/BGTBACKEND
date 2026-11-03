@@ -8,6 +8,7 @@ import { currentRequestMeta } from './request-context.js';
  * Row-level access rules.
  *
  *   admin   -> may edit any record
+ *   sa      -> may not edit department records (also blocked at route level)
  *   officer -> may edit only records they own
  *   viewer  -> may not edit anything (also blocked at route level)
  */

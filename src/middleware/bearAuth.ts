@@ -93,5 +93,7 @@ const denialContext = (c: Context<AppEnv>) => ({
 });
 
 /** Shortcuts for the most common rules. */
-export const adminOnly = requireRole('admin');
-export const canWrite = requireRole('admin', 'officer'); // viewers are read-only
+export const saOnly = requireRole('sa');                  // user accounts
+export const adminOnly = requireRole('sa', 'admin');      // settings and the audit log
+export const canWrite = requireRole('admin', 'officer');  // department records; sa and viewers are read-only
+export const canEditLists = requireRole('sa', 'admin', 'officer'); // dropdown values; viewers are read-only

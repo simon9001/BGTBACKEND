@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { queryQuarter } from './common.validators.js';
 import { PaginationQuerySchema, id, isoDate, optionalText, queryId } from './common.validators.js';
 
 /**
@@ -13,6 +14,7 @@ const procurementFields = {
     reference: optionalText(30),
     title: z.string().trim().min(3).max(500),
     budget_line_id: id.nullish(),
+    section_id: id.nullish(),
     fy_id: id,
     owner_id: id.optional(),                 // admin only
     category_id: id,
@@ -49,12 +51,24 @@ export const UpdateProcurementSchema = z
     .refine(tenderDatesInOrder, tenderDatesMessage);
 
 export const ProcurementQuerySchema = PaginationQuerySchema.extend({
+    quarter: queryQuarter,
     fy_id: queryId,
     status: z.enum(PROCUREMENT_STATUSES).optional(),
     category_id: queryId,
     owner_id: queryId,
     stage_id: queryId,
     budget_line_id: queryId,
+    priority_id: queryId,
+    no_priority: z.stringbool().optional(),
+    acquisition_method_id: queryId,
+    no_method: z.stringbool().optional(),
+    stage_group: z.string().trim().max(30).optional(),
+    no_stage: z.stringbool().optional(),         // has not reached any step yet
+    passed_stage_id: queryId,                    // has completed this step
+    open_only: z.stringbool().optional(),        // not completed, cancelled or rejected
+    statuses: z.string().trim().max(100)         // several statuses, comma separated
+        .refine((value) => value.split(',').every((status) => (PROCUREMENT_STATUSES as readonly string[]).includes(status)), 'Unknown status')
+        .optional(),
     is_escalated: z.stringbool().optional(),
     overdue: z.stringbool().optional(),
     mine: z.stringbool().optional(),            // only items owned by the logged-in user

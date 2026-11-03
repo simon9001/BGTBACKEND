@@ -10,6 +10,7 @@ import {
 import { assertLookups } from '../lookups/lookup.service.js';
 import { assertCanEdit } from '../utils/access.js';
 import { HttpError } from '../utils/http-error.js';
+import { cached } from '../utils/cache.js';
 import { buildPagination } from '../utils/pagination.js';
 import * as budgetLineServices from './budgetLine.service.js';
 
@@ -29,14 +30,14 @@ const findLineOrFail = async (budgetLineId: number) => {
 // GET /api/budget-lines
 export const listBudgetLines = async (c: Context<AppEnv>) => {
     const query = validateQuery(c, BudgetLineQuerySchema);
-    const { total, rows } = await budgetLineServices.listBudgetLinesService(query);
+    const { total, rows } = await cached(`budget-lines:${JSON.stringify(query)}`, () => budgetLineServices.listBudgetLinesService(query));
     return c.json({ success: true, data: rows, pagination: buildPagination(query.page, query.limit, total) });
 };
 
 // GET /api/budget-lines/:id
 export const getBudgetLine = async (c: Context<AppEnv>) => {
     const budgetLineId = validateIdParam(c, 'id');
-    const line = await budgetLineServices.getBudgetLineDetailService(budgetLineId);
+    const line = await cached(`budget-line:${budgetLineId}`, () => budgetLineServices.getBudgetLineDetailService(budgetLineId));
     if (!line) throw new HttpError(404, 'Budget line not found');
     return c.json({ success: true, data: line });
 };
@@ -52,6 +53,7 @@ export const createBudgetLine = async (c: Context<AppEnv>) => {
     await assertLookups([
         { field: 'category_id', id: input.category_id, type: 'category' },
         { field: 'priority_id', id: input.priority_id, type: 'priority' },
+        { field: 'section_id', id: input.section_id, type: 'section' },
     ]);
 
     const budgetLineId = await budgetLineServices.createBudgetLineService({ ...input, owner_id: ownerId }, user.user_id);
@@ -74,6 +76,7 @@ export const updateBudgetLine = async (c: Context<AppEnv>) => {
     await assertLookups([
         { field: 'category_id', id: input.category_id, type: 'category' },
         { field: 'priority_id', id: input.priority_id, type: 'priority' },
+        { field: 'section_id', id: input.section_id, type: 'section' },
     ]);
 
     await budgetLineServices.updateBudgetLineService(line, input, user.user_id);

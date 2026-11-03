@@ -25,7 +25,7 @@ import { recomputeCurrentStage } from '../procurements/procurement.service.js';
  *                            ICT sets their real email and resets their password)
  *   Budget sheets         -> BudgetLines + BudgetAllocations, plus one Procurement
  *                            per line to carry its process columns
- *   All list T-001 memos  -> StageEvents on the procurement(s) each memo requests
+ *   All list T-001 memos  -> Memos, plus StageEvents on the procurement(s) each memo requests
  *   All list T-006/T-007  -> Procurements (they have a category, status and notes)
  *   All list T-002        -> Tasks
  */
@@ -54,10 +54,15 @@ const TrackerDataSchema = z.object({
     })),
     // One memo can request several budget lines
     memos: z.array(z.object({
+        reference: z.string(),
         title: z.string(),
         owner: z.string(),
-        delivered: z.iso.date(),
-        approved: z.iso.date(),
+        category: z.string(),
+        priority: z.string().nullable(),
+        status: z.string(),
+        dgStatus: z.string().nullable(),
+        delivered: z.iso.date().nullable(),
+        approved: z.iso.date().nullable(),
         lines: z.array(z.string()),
     })),
     // Steps ticked "Yes" on a budget sheet row, by budget line code
@@ -76,7 +81,7 @@ const TrackerDataSchema = z.object({
         notes: z.string().nullable(),
     })),
     // A null owner means the sheet names nobody, so it goes to the Head of ICT to assign
-    tasks: z.array(z.object({ title: z.string(), owner: z.string().nullable() })),
+    tasks: z.array(z.object({ title: z.string(), owner: z.string().nullable(), section: z.string() })),
 }).refine(
     (data) => data.budgetLines.every((l) => l.amounts.length === data.financialYears.length),
     { message: 'Every budget line needs one amount per financial year' },
@@ -109,7 +114,7 @@ const run = async () => {
 
     const created = await withTransaction(async (tx) => {
         const query = () => new sql.Request(tx);
-        const counts = { users: 0, budgetLines: 0, allocations: 0, procurements: 0, stageEvents: 0, tasks: 0 };
+        const counts = { users: 0, budgetLines: 0, allocations: 0, procurements: 0, stageEvents: 0, memos: 0, tasks: 0 };
 
         const lookups = await query().query(`SELECT lookup_id, lookup_type, value FROM dbo.Lookups`);
         const lookupId = (type: string, value: string): number => {
@@ -262,7 +267,7 @@ const run = async () => {
             if (procurementId === null) continue; // already imported: leave its history alone
 
             const memo = data.memos.find((m) => m.lines.includes(budgetLine.code));
-            if (memo) {
+            if (memo?.delivered && memo.approved) {
                 await insertStageEvent(procurementId, 'MEMO_TO_DG', 'Completed', memo.delivered, memo.title, userId(memo.owner));
                 await insertStageEvent(procurementId, 'DG_APPROVAL', 'Approved', memo.approved, memo.title, userId(memo.owner));
             }
@@ -277,20 +282,55 @@ const run = async () => {
             await insertProcurement({ ...activity, budgetLineId: null, method: null });
         }
 
+        /* ------------------------------- Memos ------------------------------- */
+        for (const memo of data.memos) {
+            const existing = await query()
+                .input('reference', sql.NVarChar(30), memo.reference)
+                .query(`SELECT memo_id FROM dbo.Memos WHERE reference = @reference`);
+            if (existing.recordset.length > 0) continue;
+
+            const result = await query()
+                .input('reference', sql.NVarChar(30), memo.reference)
+                .input('title', sql.NVarChar(500), memo.title)
+                .input('fy_id', sql.Int, fyId(data.currentFinancialYear))
+                .input('owner_id', sql.Int, userId(memo.owner))
+                .input('category_id', sql.Int, lookupId('category', memo.category))
+                .input('priority_id', sql.Int, memo.priority ? lookupId('priority', memo.priority) : null)
+                .input('delivered_date', sql.Date, memo.delivered ? new Date(memo.delivered) : null)
+                .input('approved_date', sql.Date, memo.approved ? new Date(memo.approved) : null)
+                .input('dg_status', sql.NVarChar(20), memo.dgStatus)
+                .input('status', sql.NVarChar(20), memo.status)
+                .input('created_by', sql.Int, adminId)
+                .query(`INSERT INTO dbo.Memos (reference, title, fy_id, owner_id, category_id, priority_id, delivered_date, approved_date, dg_status, status, created_by)
+                        OUTPUT INSERTED.memo_id
+                        VALUES (@reference, @title, @fy_id, @owner_id, @category_id, @priority_id, @delivered_date, @approved_date, @dg_status, @status, @created_by)`);
+            await writeAudit(tx, { userId: adminId, action: 'CREATE', entity: 'Memos', entityId: result.recordset[0].memo_id, newValues: memo });
+            counts.memos++;
+        }
+
         /* ------------------------------- Tasks ------------------------------- */
+        const sectionId = (code: string): number => {
+            const row = lookups.recordset.find((l) => l.lookup_type === 'section' && String(l.value).startsWith(`${code} - `));
+            if (!row) throw new Error(`Section not found: ${code}. Run pnpm db:migrate first.`);
+            return row.lookup_id;
+        };
+
         for (const task of data.tasks) {
             const existing = await query()
                 .input('title', sql.NVarChar(300), task.title)
-                .query(`SELECT task_id FROM dbo.Tasks WHERE title = @title`);
+                .input('section_id', sql.Int, sectionId(task.section))
+                .query(`UPDATE dbo.Tasks SET section_id = @section_id WHERE title = @title AND section_id IS NULL;
+                        SELECT task_id FROM dbo.Tasks WHERE title = @title`);
             if (existing.recordset.length > 0) continue;
 
             const result = await query()
                 .input('title', sql.NVarChar(300), task.title)
                 .input('owner_id', sql.Int, task.owner ? userId(task.owner) : adminId)
+                .input('section_id', sql.Int, sectionId(task.section))
                 .input('created_by', sql.Int, adminId)
-                .query(`INSERT INTO dbo.Tasks (title, owner_id, created_by)
+                .query(`INSERT INTO dbo.Tasks (title, owner_id, section_id, created_by)
                         OUTPUT INSERTED.task_id
-                        VALUES (@title, @owner_id, @created_by)`);
+                        VALUES (@title, @owner_id, @section_id, @created_by)`);
             await writeAudit(tx, { userId: adminId, action: 'CREATE', entity: 'Tasks', entityId: result.recordset[0].task_id, newValues: task });
             counts.tasks++;
         }

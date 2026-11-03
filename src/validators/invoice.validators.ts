@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { queryQuarter } from './common.validators.js';
 import { PaginationQuerySchema, id, isoDate, money, optionalText, queryId } from './common.validators.js';
 
 /**
@@ -36,11 +37,15 @@ export const UpdateInvoiceSchema = z.object({
 });
 
 export const InvoiceQuerySchema = PaginationQuerySchema.extend({
+    quarter: queryQuarter,
     contract_id: queryId,
     procurement_id: queryId,
     fy_id: queryId,
+    category_id: queryId,
     owner_id: queryId,
     status: z.enum(INVOICE_STATUSES).optional(),
+    age_min: z.coerce.number().int().min(0).optional(),   // days since received
+    age_max: z.coerce.number().int().min(0).optional(),
     unpaid_only: z.stringbool().optional(),
     received_from: isoDate.optional(),
     received_to: isoDate.optional(),
@@ -58,9 +63,12 @@ export const CreatePaymentSchema = z.object({
 });
 
 export const PaymentQuerySchema = PaginationQuerySchema.extend({
+    quarter: queryQuarter,
     invoice_id: queryId,
     contract_id: queryId,
     fy_id: queryId,             // payments made within this financial year
+    category_id: queryId,
+    owner_id: queryId,
     paid_from: isoDate.optional(),
     paid_to: isoDate.optional(),
 });

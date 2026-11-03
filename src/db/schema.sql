@@ -20,7 +20,9 @@
 
 /* -----------------------------------------------------------------------------
    Users - ICT department staff who log in.
-   role: admin   = Head of ICT (sees and edits everything, manages users/settings)
+   role: sa      = System administrator (manages user accounts, settings and the
+                   audit log; sees everything but does not edit department records)
+         admin   = Head of ICT (sees and edits every record, manages settings)
          officer = ICT officer (sees everything, edits only items they own)
          viewer  = read-only access to dashboards
 ----------------------------------------------------------------------------- */
@@ -32,7 +34,7 @@ CREATE TABLE dbo.Users (
     phone_number   NVARCHAR(20)  NULL,
     password_hash  NVARCHAR(255) NOT NULL,
     role           NVARCHAR(20)  NOT NULL CONSTRAINT DF_Users_role DEFAULT 'officer'
-                   CONSTRAINT CK_Users_role CHECK (role IN ('admin', 'officer', 'viewer')),
+                   CONSTRAINT CK_Users_role CHECK (role IN ('sa', 'admin', 'officer', 'viewer')),
     is_active      BIT           NOT NULL CONSTRAINT DF_Users_is_active DEFAULT 1,
     last_login_at  DATETIME2     NULL,
     created_at     DATETIME2     NOT NULL CONSTRAINT DF_Users_created_at DEFAULT SYSUTCDATETIME(),
@@ -48,7 +50,7 @@ IF OBJECT_ID('dbo.Lookups', 'U') IS NULL
 CREATE TABLE dbo.Lookups (
     lookup_id    INT IDENTITY(1,1) PRIMARY KEY,
     lookup_type  NVARCHAR(50)  NOT NULL
-                 CONSTRAINT CK_Lookups_type CHECK (lookup_type IN ('category', 'priority', 'acquisition_method', 'scm_officer')),
+                 CONSTRAINT CK_Lookups_type CHECK (lookup_type IN ('category', 'priority', 'acquisition_method', 'scm_officer', 'section')),
     value        NVARCHAR(150) NOT NULL,
     sort_order   INT           NOT NULL CONSTRAINT DF_Lookups_sort_order DEFAULT 0,
     is_active    BIT           NOT NULL CONSTRAINT DF_Lookups_is_active DEFAULT 1,
@@ -345,6 +347,70 @@ CREATE INDEX IX_AuthEvents_created_at ON dbo.AuthEvents (created_at DESC) INCLUD
 GO
 
 /* -----------------------------------------------------------------------------
+   Memos - the T-001 "Memos to DG" rows of the tracker's All list sheet. One memo
+   can request several budget lines, so it is a record of its own. The steps it
+   triggers are still recorded as StageEvents on each procurement.
+----------------------------------------------------------------------------- */
+IF OBJECT_ID('dbo.Memos', 'U') IS NULL
+CREATE TABLE dbo.Memos (
+    memo_id         INT IDENTITY(1,1) PRIMARY KEY,
+    reference       NVARCHAR(30)   NULL,
+    title           NVARCHAR(500)  NOT NULL,
+    fy_id           INT            NOT NULL CONSTRAINT FK_Memos_fy REFERENCES dbo.FinancialYears(fy_id),
+    owner_id        INT            NOT NULL CONSTRAINT FK_Memos_owner REFERENCES dbo.Users(user_id),
+    category_id     INT            NOT NULL CONSTRAINT FK_Memos_category REFERENCES dbo.Lookups(lookup_id),
+    priority_id     INT            NULL     CONSTRAINT FK_Memos_priority REFERENCES dbo.Lookups(lookup_id),
+    delivered_date  DATE           NULL,      -- Delivery Day to DG
+    approved_date   DATE           NULL,      -- Day Approved by DG
+    dg_status       NVARCHAR(20)   NULL
+                    CONSTRAINT CK_Memos_dg_status CHECK (dg_status IN ('Pending', 'Approved', 'Rejected', 'Returned')),
+    status          NVARCHAR(20)   NOT NULL CONSTRAINT DF_Memos_status DEFAULT 'Not Started'
+                    CONSTRAINT CK_Memos_status CHECK (status IN ('Not Started', 'In Progress', 'In Review', 'On Hold', 'Completed', 'Cancelled', 'Rejected')),
+    notes           NVARCHAR(MAX)  NULL,
+    is_deleted      BIT            NOT NULL CONSTRAINT DF_Memos_is_deleted DEFAULT 0,
+    created_by      INT            NOT NULL CONSTRAINT FK_Memos_created_by REFERENCES dbo.Users(user_id),
+    created_at      DATETIME2      NOT NULL CONSTRAINT DF_Memos_created_at DEFAULT SYSUTCDATETIME(),
+    updated_at      DATETIME2      NOT NULL CONSTRAINT DF_Memos_updated_at DEFAULT SYSUTCDATETIME(),
+    CONSTRAINT CK_Memos_dates CHECK (approved_date IS NULL OR delivered_date IS NULL OR approved_date >= delivered_date)
+);
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Memos_reference')
+CREATE UNIQUE INDEX UX_Memos_reference ON dbo.Memos (reference) WHERE reference IS NOT NULL;
+GO
+
+/* -----------------------------------------------------------------------------
+   Upgrades for databases created before the "sa" role and tracker sections.
+   A section is a shaded header row of a sheet (T-004, A-001, M ...), stored as a
+   lookup so the empty ones still exist and can be managed from Settings.
+----------------------------------------------------------------------------- */
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Users_role' AND definition NOT LIKE '%''sa''%')
+BEGIN
+    ALTER TABLE dbo.Users DROP CONSTRAINT CK_Users_role;
+    ALTER TABLE dbo.Users ADD CONSTRAINT CK_Users_role CHECK (role IN ('sa', 'admin', 'officer', 'viewer'));
+END
+GO
+
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = 'CK_Lookups_type' AND definition NOT LIKE '%section%')
+BEGIN
+    ALTER TABLE dbo.Lookups DROP CONSTRAINT CK_Lookups_type;
+    ALTER TABLE dbo.Lookups ADD CONSTRAINT CK_Lookups_type CHECK (lookup_type IN ('category', 'priority', 'acquisition_method', 'scm_officer', 'section'));
+END
+GO
+
+IF COL_LENGTH('dbo.BudgetLines', 'section_id') IS NULL
+ALTER TABLE dbo.BudgetLines ADD section_id INT NULL CONSTRAINT FK_BudgetLines_section REFERENCES dbo.Lookups(lookup_id);
+GO
+
+IF COL_LENGTH('dbo.Procurements', 'section_id') IS NULL
+ALTER TABLE dbo.Procurements ADD section_id INT NULL CONSTRAINT FK_Procurements_section REFERENCES dbo.Lookups(lookup_id);
+GO
+
+IF COL_LENGTH('dbo.Tasks', 'section_id') IS NULL
+ALTER TABLE dbo.Tasks ADD section_id INT NULL CONSTRAINT FK_Tasks_section REFERENCES dbo.Lookups(lookup_id);
+GO
+
+/* -----------------------------------------------------------------------------
    vw_Procurements - procurements with display names and live tracking figures.
    Used by the procurement list and the dashboard so the "overdue" and
    "progress" rules are defined in exactly one place:
@@ -362,6 +428,7 @@ SELECT
     p.priority_id, pr.value AS priority, pr.sort_order AS priority_rank,
     p.acquisition_method_id, am.value AS acquisition_method,
     p.scm_officer_id, scm.value AS scm_officer,
+    p.section_id, sec.value AS section,
     p.status,
     p.current_stage_id, ws.code AS current_stage_code, ws.name AS current_stage_name,
     ws.stage_group AS current_stage_group, ws.sort_order AS current_stage_order, ws.sla_days,
@@ -388,6 +455,7 @@ JOIN dbo.Lookups cat            ON cat.lookup_id = p.category_id
 LEFT JOIN dbo.Lookups pr        ON pr.lookup_id = p.priority_id
 LEFT JOIN dbo.Lookups am        ON am.lookup_id = p.acquisition_method_id
 LEFT JOIN dbo.Lookups scm       ON scm.lookup_id = p.scm_officer_id
+LEFT JOIN dbo.Lookups sec       ON sec.lookup_id = p.section_id
 LEFT JOIN dbo.BudgetLines bl    ON bl.budget_line_id = p.budget_line_id
 LEFT JOIN dbo.WorkflowStages ws ON ws.stage_id = p.current_stage_id
 OUTER APPLY (

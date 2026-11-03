@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import type { QuarterRange } from '../validators/common.validators.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
@@ -59,12 +60,14 @@ const DISPLAY_JOINS = `
 // ------------------------------- Queries -------------------------------------
 
 // Paginated, filterable list of contracts with invoiced / paid totals
-export const listContractsService = async (query: ContractQuery) => {
+export const listContractsService = async (query: ContractQuery & QuarterRange) => {
     const db = getDbPool();
     const where = `
         WHERE c.is_deleted = 0
           AND (@procurement_id IS NULL OR c.procurement_id = @procurement_id)
           AND (@fy_id IS NULL OR p.fy_id = @fy_id)
+          AND (@quarter_from IS NULL OR c.start_date BETWEEN @quarter_from AND @quarter_to)
+          AND (@category_id IS NULL OR p.category_id = @category_id)
           AND (@owner_id IS NULL OR p.owner_id = @owner_id)
           AND (@status IS NULL OR c.status = @status)
           AND (@expiring IS NULL OR (c.status = 'Active'
@@ -73,7 +76,10 @@ export const listContractsService = async (query: ContractQuery) => {
 
     const result = await db.request()
         .input('procurement_id', sql.Int, query.procurement_id ?? null)
+        .input('quarter_from', sql.Date, query.quarter_from ?? null)
+        .input('quarter_to', sql.Date, query.quarter_to ?? null)
         .input('fy_id', sql.Int, query.fy_id ?? null)
+        .input('category_id', sql.Int, query.category_id ?? null)
         .input('owner_id', sql.Int, query.owner_id ?? null)
         .input('status', sql.NVarChar(20), query.status ?? null)
         .input('expiring', sql.Int, query.expiring_within_days ?? null)

@@ -14,6 +14,8 @@ import { apiLimiter } from './middleware/rateLimiter.js';
 import { requestLogger } from './middleware/requestLogger.js';
 
 // Feature routes
+import { invalidateOnWrite, startCacheRefresh } from './utils/cache.js';
+import { warmDashboardCache } from './dashboard/dashboard.controller.js';
 import authRoutes from './auth/auth.routes.js';
 import userRoutes from './users/user.routes.js';
 import lookupRoutes from './lookups/lookup.routes.js';
@@ -25,6 +27,8 @@ import contractRoutes from './contracts/contract.routes.js';
 import invoiceRoutes from './invoices/invoice.routes.js';
 import paymentRoutes from './payments/payment.routes.js';
 import taskRoutes from './tasks/task.routes.js';
+import memoRoutes from './memos/memo.routes.js';
+import trackerRoutes from './tracker/tracker.routes.js';
 import dashboardRoutes from './dashboard/dashboard.routes.js';
 import auditRoutes from './audit/audit.routes.js';
 import metricsRoutes from './metrics/metrics.routes.js';
@@ -58,6 +62,7 @@ app.use('*', cors({
     exposeHeaders: ['X-Request-Id'],
 }));
 app.use('/api/*', apiLimiter);
+app.use('/api/*', invalidateOnWrite); // any successful save clears cached results
 
 // ------------------------- Health check & monitoring -------------------------
 app.get('/', (c) => c.json({ success: true, service: 'BGTtracker API', status: 'running' }));
@@ -75,6 +80,8 @@ app.route('/api/workflow-stages', workflowStageRoutes);
 app.route('/api/budget-lines', budgetLineRoutes);
 app.route('/api/procurements', procurementRoutes);
 app.route('/api/tasks', taskRoutes);
+app.route('/api/memos', memoRoutes);
+app.route('/api/tracker', trackerRoutes);
 
 // Money
 app.route('/api/contracts', contractRoutes);
@@ -131,6 +138,13 @@ initDatabaseConnection()
         const server = serve({ fetch: app.fetch, port: env.PORT }, (info) => {
             appLogger.info({ port: info.port, env: env.NODE_ENV, log_level: env.LOG_LEVEL }, `BGTtracker API running on http://localhost:${info.port}`);
         });
+
+        // Load the default dashboard now, so the first person to open it does not wait
+        startCacheRefresh();
+        const warmStartedAt = performance.now();
+        warmDashboardCache()
+            .then(() => appLogger.info({ duration_ms: Math.round(performance.now() - warmStartedAt) }, 'Dashboard pre-loaded'))
+            .catch((err) => appLogger.warn({ err }, 'Could not pre-load the dashboard'));
 
         // Close the HTTP server and DB pool cleanly on Ctrl+C / service stop
         const shutdown = (signal: string) => {

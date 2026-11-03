@@ -5,6 +5,8 @@ import { CreateInvoiceSchema, InvoiceQuerySchema, UpdateInvoiceSchema } from '..
 import { getContractRowService } from '../contracts/contract.service.js';
 import { assertCanEdit } from '../utils/access.js';
 import { HttpError } from '../utils/http-error.js';
+import { cached } from '../utils/cache.js';
+import { quarterDates } from '../financial-years/financialYear.service.js';
 import { buildPagination } from '../utils/pagination.js';
 import * as invoiceServices from './invoice.service.js';
 
@@ -23,14 +25,15 @@ const findInvoiceOrFail = async (invoiceId: number) => {
 // GET /api/invoices
 export const listInvoices = async (c: Context<AppEnv>) => {
     const query = validateQuery(c, InvoiceQuerySchema);
-    const { total, rows } = await invoiceServices.listInvoicesService(query);
+    const dates = await quarterDates(query.fy_id, query.quarter);
+    const { total, rows } = await cached(`invoices:${JSON.stringify(query)}`, () => invoiceServices.listInvoicesService({ ...query, ...dates }));
     return c.json({ success: true, data: rows, pagination: buildPagination(query.page, query.limit, total) });
 };
 
 // GET /api/invoices/:id
 export const getInvoice = async (c: Context<AppEnv>) => {
     const invoiceId = validateIdParam(c, 'id');
-    const invoice = await invoiceServices.getInvoiceDetailService(invoiceId);
+    const invoice = await cached(`invoice:${invoiceId}`, () => invoiceServices.getInvoiceDetailService(invoiceId));
     if (!invoice) throw new HttpError(404, 'Invoice not found');
     return c.json({ success: true, data: invoice });
 };

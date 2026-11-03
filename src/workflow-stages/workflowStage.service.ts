@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import { cached } from '../utils/cache.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import type { CreateStageInput, UpdateStageInput } from '../validators/settings.validators.js';
@@ -21,7 +22,9 @@ const COLUMNS = 'stage_id, code, name, stage_group, sort_order, sla_days, is_act
 const INSERTED_COLUMNS = COLUMNS.split(', ').map((col) => `INSERTED.${col}`).join(', ');
 
 // All stages in process order
-export const getStagesService = async (includeInactive: boolean): Promise<WorkflowStage[]> => {
+export const getStagesService = (includeInactive: boolean) => cached(`stages:${includeInactive}`, () => loadStages(includeInactive));
+
+const loadStages = async (includeInactive: boolean): Promise<WorkflowStage[]> => {
     const db = getDbPool();
     const result = await db.request()
         .input('include_inactive', sql.Bit, includeInactive)
