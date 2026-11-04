@@ -185,6 +185,7 @@ export const getQuarterlySpendService = async (filters: DashboardFilters) => {
         ${DECLARE_FULL_YEAR}
 
         SELECT
+            ISNULL(SUM(a.planned_amount), 0) AS year_planned,
             ISNULL(SUM(a.q1_amount), 0) AS q1, ISNULL(SUM(a.q2_amount), 0) AS q2,
             ISNULL(SUM(a.q3_amount), 0) AS q3, ISNULL(SUM(a.q4_amount), 0) AS q4
         FROM dbo.BudgetAllocations a
@@ -212,6 +213,7 @@ export const getQuarterlySpendService = async (filters: DashboardFilters) => {
         cumulativeActual += actualAmount;
         return {
             quarter: `Q${quarter}`,
+            year_planned: Number(planned.year_planned),
             ...periodOf(fyStart[0].start_date, (quarter - 1) * 3, 3),
             planned: plannedAmount,
             actual: actualAmount,

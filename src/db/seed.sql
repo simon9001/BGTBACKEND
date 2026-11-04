@@ -60,7 +60,8 @@
 INSERT INTO dbo.Lookups (lookup_type, value, sort_order)
 SELECT s.lookup_type, s.value, s.sort_order
 FROM src s
-WHERE NOT EXISTS (SELECT 1 FROM dbo.Lookups l WHERE l.lookup_type = s.lookup_type AND l.value = s.value);
+-- Only fills a list that is still empty: values renamed or removed in the app stay that way
+WHERE NOT EXISTS (SELECT 1 FROM dbo.Lookups l WHERE l.lookup_type = s.lookup_type);
 GO
 
 /* ---- File existing rows under their section, using the id in their code ---- */

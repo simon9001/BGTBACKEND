@@ -202,6 +202,23 @@ export const createBudgetLineService = async (
     });
 };
 
+// The stored plan of one year, or zeros if there is none yet
+export const getAllocationService = async (budgetLineId: number, fyId: number) => {
+    const result = await getDbPool().request()
+        .input('budget_line_id', sql.Int, budgetLineId)
+        .input('fy_id', sql.Int, fyId)
+        .query(`SELECT planned_amount, q1_amount, q2_amount, q3_amount, q4_amount
+                FROM dbo.BudgetAllocations WHERE budget_line_id = @budget_line_id AND fy_id = @fy_id`);
+    const row = result.recordset[0];
+    return {
+        planned_amount: Number(row?.planned_amount ?? 0),
+        q1_amount: Number(row?.q1_amount ?? 0),
+        q2_amount: Number(row?.q2_amount ?? 0),
+        q3_amount: Number(row?.q3_amount ?? 0),
+        q4_amount: Number(row?.q4_amount ?? 0),
+    };
+};
+
 // Update a budget line's own fields (allocations have their own endpoint)
 export const updateBudgetLineService = async (before: BudgetLineRow, input: UpdateBudgetLineInput, actorId: number): Promise<void> => {
     const quantity = input.quantity ?? before.quantity;

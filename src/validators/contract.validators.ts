@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { queryQuarter } from './common.validators.js';
-import { PaginationQuerySchema, id, isoDate, money, optionalText, queryId } from './common.validators.js';
+import { PaginationQuerySchema, queryQuarter, id, isoDate, money, optionalText, queryId } from './common.validators.js';
 
 /**
  * Contract validators.

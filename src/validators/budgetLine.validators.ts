@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { queryQuarter } from './common.validators.js';
-import { PaginationQuerySchema, id, money, optionalText, queryId } from './common.validators.js';
+import { PaginationQuerySchema, queryQuarter, id, money, optionalText, queryId } from './common.validators.js';
 import { sumAmounts, toCents } from '../utils/money.js';
 
 /**
@@ -23,6 +22,15 @@ export const AllocationSchema = z
         message: 'Quarterly amounts cannot add up to more than the planned amount for the year',
         path: ['planned_amount'],
     });
+
+// One or more figures of a year's plan; the others keep their stored values
+export const PatchAllocationSchema = z.object({
+    planned_amount: money,
+    q1_amount: money,
+    q2_amount: money,
+    q3_amount: money,
+    q4_amount: money,
+}).partial();
 
 export const CreateBudgetLineSchema = z
     .object({

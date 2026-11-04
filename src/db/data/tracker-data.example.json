@@ -22,6 +22,13 @@
                 1000000,
                 0,
                 0
+            ],
+            "section": "A-001",
+            "quarters": [
+                0,
+                500000,
+                500000,
+                0
             ]
         }
     ],
@@ -38,7 +45,9 @@
             "approved": "2026-08-21",
             "lines": [
                 "A-001-01"
-            ]
+            ],
+            "section": "T-001",
+            "sheetCategory": "Example category wording"
         }
     ],
     "budgetSheetProgress": {
@@ -60,7 +69,9 @@
             "category": "Extension of Time",
             "priority": "Medium",
             "status": "In Progress",
-            "notes": "Example note"
+            "notes": "Example note",
+            "section": "T-006",
+            "sheetCategory": "Example category wording"
         }
     ],
     "tasks": [
@@ -68,6 +79,57 @@
             "title": "Example task",
             "owner": null,
             "section": "T-002"
+        }
+    ],
+    "lists": {
+        "Category": [
+            "ICT Equipment",
+            "Extension of Time"
+        ],
+        "Priority": [
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+        ],
+        "Acquisition Method": [
+            "Open Tender"
+        ],
+        "SCM Officers": [
+            "Example SCM Officer"
+        ]
+    },
+    "sections": [
+        {
+            "code": "T-001",
+            "name": "Example memos section",
+            "sheet": "Procurement of Assets_All list",
+            "sortOrder": 1
+        },
+        {
+            "code": "T-002",
+            "name": "Example tasks section",
+            "sheet": "Procurement of Assets_All list",
+            "sortOrder": 2
+        },
+        {
+            "code": "T-006",
+            "name": "Example follow-ups section",
+            "sheet": "Procurement of Assets_All list",
+            "sortOrder": 6
+        },
+        {
+            "code": "A-001",
+            "name": "Example budget section",
+            "sheet": "Procurement of Assets_Infra, Sw",
+            "sortOrder": 8
+        }
+    ],
+    "emptyRows": [
+        {
+            "sheet": "Procurement of Assets_Infra, Sw",
+            "cell": "A9",
+            "code": "A-001-99"
         }
     ]
 }

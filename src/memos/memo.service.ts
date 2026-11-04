@@ -146,7 +146,7 @@ export const updateMemoService = async (before: MemoRow, input: UpdateMemoInput,
     };
 
     if (merged.delivered_date && merged.approved_date && merged.approved_date < merged.delivered_date) {
-        throw new HttpError(400, 'approved_date cannot be before delivered_date');
+        throw new HttpError(400, 'The approval date cannot be before the delivery date');
     }
 
     return withTransaction(async (tx) => {

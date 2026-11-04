@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { queryQuarter } from './common.validators.js';
-import { PaginationQuerySchema, id, isoDate, optionalText, queryId } from './common.validators.js';
+import { PaginationQuerySchema, queryQuarter, id, isoDate, optionalText, queryId } from './common.validators.js';
 
 /**
  * Procurement & stage-event validators.
@@ -34,7 +33,7 @@ const procurementFields = {
 const tenderDatesInOrder = (p: { tender_float_date?: string | null; tender_opening_date?: string | null }) =>
     !p.tender_float_date || !p.tender_opening_date || p.tender_opening_date >= p.tender_float_date;
 
-const tenderDatesMessage = { message: 'tender_opening_date cannot be before tender_float_date', path: ['tender_opening_date'] };
+const tenderDatesMessage = { message: 'The opening date cannot be before the float date', path: ['tender_opening_date'] };
 
 export const CreateProcurementSchema = z
     .object({

@@ -3,6 +3,7 @@ import type { AppEnv } from '../types/hono.js';
 import { validateBody, validateIdParam, validateQuery } from '../middleware/validation.js';
 import {
     AllocationSchema,
+    PatchAllocationSchema,
     BudgetLineQuerySchema,
     CreateBudgetLineSchema,
     UpdateBudgetLineSchema,
@@ -95,6 +96,25 @@ export const setAllocation = async (c: Context<AppEnv>) => {
     assertCanEdit(user, line.owner_id);
 
     await budgetLineServices.setAllocationService(line, fyId, input, user.user_id);
+    const updated = await budgetLineServices.getBudgetLineDetailService(budgetLineId);
+    return c.json({ success: true, message: 'Allocation saved', data: updated });
+};
+
+// PATCH /api/budget-lines/:id/allocations/:fyId - change one figure, as a sheet cell does
+export const patchAllocation = async (c: Context<AppEnv>) => {
+    const budgetLineId = validateIdParam(c, 'id');
+    const fyId = validateIdParam(c, 'fyId');
+    const patch = await validateBody(c, PatchAllocationSchema);
+    const user = c.get('user');
+
+    const line = await findLineOrFail(budgetLineId);
+    assertCanEdit(user, line.owner_id);
+
+    // Merged with what is stored now, so two quick edits cannot undo each other
+    const merged = AllocationSchema.safeParse({ ...(await budgetLineServices.getAllocationService(budgetLineId, fyId)), ...patch });
+    if (!merged.success) throw new HttpError(400, merged.error.issues[0]?.message ?? 'Invalid amounts');
+
+    await budgetLineServices.setAllocationService(line, fyId, merged.data, user.user_id);
     const updated = await budgetLineServices.getBudgetLineDetailService(budgetLineId);
     return c.json({ success: true, message: 'Allocation saved', data: updated });
 };

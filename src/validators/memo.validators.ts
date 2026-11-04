@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import { queryQuarter } from './common.validators.js';
-import { PaginationQuerySchema, id, isoDate, optionalText, queryId } from './common.validators.js';
+import { PaginationQuerySchema, queryQuarter, id, isoDate, optionalText, queryId } from './common.validators.js';
 import { PROCUREMENT_STATUSES } from './procurement.validators.js';
 
 /**
@@ -14,7 +13,7 @@ export const DG_STATUSES = ['Pending', 'Approved', 'Rejected', 'Returned'] as co
 const datesInOrder = (m: { delivered_date?: string | null; approved_date?: string | null }) =>
     !m.delivered_date || !m.approved_date || m.approved_date >= m.delivered_date;
 
-const datesMessage = { message: 'approved_date cannot be before delivered_date', path: ['approved_date'] };
+const datesMessage = { message: 'The approval date cannot be before the delivery date', path: ['approved_date'] };
 
 const memoFields = {
     reference: optionalText(30),

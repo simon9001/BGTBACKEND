@@ -261,7 +261,7 @@ export const updateProcurementService = async (before: ProcurementRow, input: Up
     };
 
     if (merged.tender_float_date && merged.tender_opening_date && merged.tender_opening_date < merged.tender_float_date) {
-        throw new HttpError(400, 'tender_opening_date cannot be before tender_float_date');
+        throw new HttpError(400, 'The opening date cannot be before the float date');
     }
 
     // Clearing the escalation flag also clears who it was escalated to

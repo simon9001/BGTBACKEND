@@ -22,6 +22,7 @@ budgetLineRoutes.put('/:id', canWrite, budgetLineControllers.updateBudgetLine);
 
 // Set / remove the planned spend for one financial year
 budgetLineRoutes.put('/:id/allocations/:fyId', canWrite, budgetLineControllers.setAllocation);
+budgetLineRoutes.patch('/:id/allocations/:fyId', canWrite, budgetLineControllers.patchAllocation);
 budgetLineRoutes.delete('/:id/allocations/:fyId', canWrite, budgetLineControllers.deleteAllocation);
 
 // Delete a budget line (owner or Head of ICT)

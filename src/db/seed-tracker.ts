@@ -21,8 +21,11 @@ import { recomputeCurrentStage } from '../procurements/procurement.service.js';
  * overwrites changes made in the app.
  *
  * How the sheets map to tables:
- *   Lists sheet "Owners"  -> Users (officers who cannot log in until the Head of
- *                            ICT sets their real email and resets their password)
+ *   Lists sheet           -> Lookups, added on the first import only, so a value
+ *                            renamed or removed in the app does not come back
+ *   Section header rows   -> Lookups of type "section" (the empty ones too)
+ *   Lists sheet "Owners"  -> Users (officers who cannot log in until the system
+ *                            administrator sets their real email and password)
  *   Budget sheets         -> BudgetLines + BudgetAllocations, plus one Procurement
  *                            per line to carry its process columns
  *   All list T-001 memos  -> Memos, plus StageEvents on the procurement(s) each memo requests
@@ -40,20 +43,25 @@ const DATA_FILE = fileURLToPath(new URL('./data/tracker-data.json', import.meta.
 const TrackerDataSchema = z.object({
     financialYears: z.array(z.string()).min(1),
     currentFinancialYear: z.string(),
+    lists: z.record(z.string(), z.array(z.union([z.string(), z.number()]))), // the Lists sheet, column by column
+    sections: z.array(z.object({ code: z.string(), name: z.string(), sheet: z.string(), sortOrder: z.number() })),
     undatedStepDate: z.iso.date(),
     owners: z.array(z.string()),
     budgetLines: z.array(z.object({
         code: z.string(),
         description: z.string(),
+        section: z.string(),
         category: z.string(),
         quantity: z.number(),
         unitPrice: z.number(),
         owner: z.string(),
         priority: z.string().nullable(),
         amounts: z.array(z.number()), // planned spend for financialYears, in order
+        quarters: z.array(z.number()).length(4), // Q1-Q4 of the current financial year
     })),
     // One memo can request several budget lines
     memos: z.array(z.object({
+        section: z.string(),
         reference: z.string(),
         title: z.string(),
         owner: z.string(),
@@ -72,6 +80,7 @@ const TrackerDataSchema = z.object({
     })),
     // All list activities with no budget line behind them
     standaloneProcurements: z.array(z.object({
+        section: z.string(),
         reference: z.string(),
         title: z.string(),
         owner: z.string(),
@@ -85,6 +94,12 @@ const TrackerDataSchema = z.object({
 }).refine(
     (data) => data.budgetLines.every((l) => l.amounts.length === data.financialYears.length),
     { message: 'Every budget line needs one amount per financial year' },
+).refine(
+    (data) => {
+        const currentIndex = data.financialYears.indexOf(data.currentFinancialYear);
+        return data.budgetLines.every((l) => l.quarters.reduce((sum, q) => sum + q, 0) <= (l.amounts[currentIndex] ?? 0));
+    },
+    { message: 'A budget line\'s quarters cannot add up to more than its amount for the current year' },
 );
 
 const loadTrackerData = () => {
@@ -116,7 +131,34 @@ const run = async () => {
         const query = () => new sql.Request(tx);
         const counts = { users: 0, budgetLines: 0, allocations: 0, procurements: 0, stageEvents: 0, memos: 0, tasks: 0 };
 
+        /* ---- Lists and sections: only on the first import (no budget lines yet) --- */
+        const isFirstImport = (await query().query(`SELECT COUNT(*) AS total FROM dbo.BudgetLines`)).recordset[0].total === 0;
+        if (isFirstImport) {
+            const wanted: { type: string; values: string[] }[] = [
+                { type: 'category', values: (data.lists.Category ?? []).map(String) },
+                { type: 'priority', values: (data.lists.Priority ?? []).map(String) },
+                { type: 'acquisition_method', values: (data.lists['Acquisition Method'] ?? []).map(String) },
+                { type: 'scm_officer', values: (data.lists['SCM Officers'] ?? []).map(String) },
+                { type: 'section', values: data.sections.map((s) => `${s.code} - ${s.name}`) },
+            ];
+            for (const { type, values } of wanted) {
+                for (const [index, value] of values.entries()) {
+                    await query()
+                        .input('type', sql.NVarChar(50), type)
+                        .input('value', sql.NVarChar(150), value)
+                        .input('sort_order', sql.Int, index + 1)
+                        .query(`IF NOT EXISTS (SELECT 1 FROM dbo.Lookups WHERE lookup_type = @type AND value = @value)
+                                INSERT INTO dbo.Lookups (lookup_type, value, sort_order) VALUES (@type, @value, @sort_order)`);
+                }
+            }
+        }
+
         const lookups = await query().query(`SELECT lookup_id, lookup_type, value FROM dbo.Lookups`);
+        const sectionId = (code: string): number => {
+            const row = lookups.recordset.find((l) => l.lookup_type === 'section' && String(l.value).startsWith(`${code} - `));
+            if (!row) throw new Error(`Section not found: ${code}. Run pnpm db:migrate first.`);
+            return row.lookup_id;
+        };
         const lookupId = (type: string, value: string): number => {
             const row = lookups.recordset.find((l) => l.lookup_type === type && l.value === value);
             if (!row) throw new Error(`Lookup not found: ${type} = ${value}. Run pnpm db:migrate first.`);
@@ -169,7 +211,7 @@ const run = async () => {
 
         /* Inserts a procurement unless its reference exists. Returns the new id, or null if skipped. */
         const insertProcurement = async (p: {
-            reference: string; title: string; budgetLineId: number | null; owner: string; category: string;
+            reference: string; title: string; budgetLineId: number | null; section: string; owner: string; category: string;
             priority: string | null; method: string | null; status: string; notes: string | null;
         }): Promise<number | null> => {
             const existing = await query()
@@ -181,6 +223,7 @@ const run = async () => {
                 .input('reference', sql.NVarChar(30), p.reference)
                 .input('title', sql.NVarChar(500), p.title)
                 .input('budget_line_id', sql.Int, p.budgetLineId)
+                .input('section_id', sql.Int, sectionId(p.section))
                 .input('fy_id', sql.Int, fyId(data.currentFinancialYear))
                 .input('owner_id', sql.Int, userId(p.owner))
                 .input('category_id', sql.Int, lookupId('category', p.category))
@@ -189,10 +232,10 @@ const run = async () => {
                 .input('status', sql.NVarChar(20), p.status)
                 .input('notes', sql.NVarChar(sql.MAX), p.notes)
                 .input('created_by', sql.Int, adminId)
-                .query(`INSERT INTO dbo.Procurements (reference, title, budget_line_id, fy_id, owner_id, category_id, priority_id,
+                .query(`INSERT INTO dbo.Procurements (reference, title, budget_line_id, section_id, fy_id, owner_id, category_id, priority_id,
                                                       acquisition_method_id, status, notes, created_by)
                         OUTPUT INSERTED.procurement_id
-                        VALUES (@reference, @title, @budget_line_id, @fy_id, @owner_id, @category_id, @priority_id,
+                        VALUES (@reference, @title, @budget_line_id, @section_id, @fy_id, @owner_id, @category_id, @priority_id,
                                 @acquisition_method_id, @status, @notes, @created_by)`);
             const procurementId: number = result.recordset[0].procurement_id;
             await writeAudit(tx, { userId: adminId, action: 'CREATE', entity: 'Procurements', entityId: procurementId, newValues: p });
@@ -227,14 +270,15 @@ const run = async () => {
                     .input('code', sql.NVarChar(20), budgetLine.code)
                     .input('description', sql.NVarChar(500), budgetLine.description)
                     .input('category_id', sql.Int, lookupId('category', budgetLine.category))
+                    .input('section_id', sql.Int, sectionId(budgetLine.section))
                     .input('priority_id', sql.Int, budgetLine.priority ? lookupId('priority', budgetLine.priority) : null)
                     .input('owner_id', sql.Int, userId(budgetLine.owner))
                     .input('quantity', sql.Int, budgetLine.quantity)
                     .input('unit_price', sql.Decimal(18, 2), budgetLine.unitPrice)
                     .input('created_by', sql.Int, adminId)
-                    .query(`INSERT INTO dbo.BudgetLines (code, description, category_id, priority_id, owner_id, quantity, unit_price, created_by)
+                    .query(`INSERT INTO dbo.BudgetLines (code, description, category_id, section_id, priority_id, owner_id, quantity, unit_price, created_by)
                             OUTPUT INSERTED.budget_line_id
-                            VALUES (@code, @description, @category_id, @priority_id, @owner_id, @quantity, @unit_price, @created_by)`);
+                            VALUES (@code, @description, @category_id, @section_id, @priority_id, @owner_id, @quantity, @unit_price, @created_by)`);
                 budgetLineId = result.recordset[0].budget_line_id as number;
                 await writeAudit(tx, { userId: adminId, action: 'CREATE', entity: 'BudgetLines', entityId: budgetLineId, newValues: budgetLine });
                 counts.budgetLines++;
@@ -242,12 +286,19 @@ const run = async () => {
                 // Years with nothing planned get no row
                 for (const [index, amount] of budgetLine.amounts.entries()) {
                     if (amount === 0) continue;
+                    // The sheets' Q1-Q4 columns are for the current year
+                    const fyCode = data.financialYears[index]!;
+                    const [q1 = 0, q2 = 0, q3 = 0, q4 = 0] = fyCode === data.currentFinancialYear ? budgetLine.quarters : [];
                     await query()
                         .input('budget_line_id', sql.Int, budgetLineId)
-                        .input('fy_id', sql.Int, fyId(data.financialYears[index]!))
+                        .input('fy_id', sql.Int, fyId(fyCode))
                         .input('planned_amount', sql.Decimal(18, 2), amount)
-                        .query(`INSERT INTO dbo.BudgetAllocations (budget_line_id, fy_id, planned_amount)
-                                VALUES (@budget_line_id, @fy_id, @planned_amount)`);
+                        .input('q1', sql.Decimal(18, 2), q1)
+                        .input('q2', sql.Decimal(18, 2), q2)
+                        .input('q3', sql.Decimal(18, 2), q3)
+                        .input('q4', sql.Decimal(18, 2), q4)
+                        .query(`INSERT INTO dbo.BudgetAllocations (budget_line_id, fy_id, planned_amount, q1_amount, q2_amount, q3_amount, q4_amount)
+                                VALUES (@budget_line_id, @fy_id, @planned_amount, @q1, @q2, @q3, @q4)`);
                     counts.allocations++;
                 }
             }
@@ -257,6 +308,7 @@ const run = async () => {
                 reference: budgetLine.code,
                 title: budgetLine.description,
                 budgetLineId,
+                section: budgetLine.section,
                 owner: budgetLine.owner,
                 category: budgetLine.category,
                 priority: budgetLine.priority,
@@ -309,12 +361,6 @@ const run = async () => {
         }
 
         /* ------------------------------- Tasks ------------------------------- */
-        const sectionId = (code: string): number => {
-            const row = lookups.recordset.find((l) => l.lookup_type === 'section' && String(l.value).startsWith(`${code} - `));
-            if (!row) throw new Error(`Section not found: ${code}. Run pnpm db:migrate first.`);
-            return row.lookup_id;
-        };
-
         for (const task of data.tasks) {
             const existing = await query()
                 .input('title', sql.NVarChar(300), task.title)

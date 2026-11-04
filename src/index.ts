@@ -5,7 +5,7 @@ import { cors } from 'hono/cors';
 import { requestId } from 'hono/request-id';
 import { secureHeaders } from 'hono/secure-headers';
 import { env } from './config/env.js';
-import initDatabaseConnection, { closeDatabaseConnection } from './db/dbconfig.js';
+import initDatabaseConnection, { closeDatabaseConnection, getDbPool } from './db/dbconfig.js';
 import { appLogger, logger } from './logger/logger.js';
 import { appErrorsTotal, registerMetrics } from './metrics/metrics.js';
 import type { AppEnv } from './types/hono.js';
@@ -14,6 +14,7 @@ import { apiLimiter } from './middleware/rateLimiter.js';
 import { requestLogger } from './middleware/requestLogger.js';
 
 // Feature routes
+import { bodyLimit } from 'hono/body-limit';
 import { invalidateOnWrite, startCacheRefresh } from './utils/cache.js';
 import { warmDashboardCache } from './dashboard/dashboard.controller.js';
 import authRoutes from './auth/auth.routes.js';
@@ -62,10 +63,21 @@ app.use('*', cors({
     exposeHeaders: ['X-Request-Id'],
 }));
 app.use('/api/*', apiLimiter);
+app.use('/api/*', bodyLimit({ maxSize: 1024 * 1024, onError: (c) => c.json({ success: false, error: 'Request too large' }, 413) }));
 app.use('/api/*', invalidateOnWrite); // any successful save clears cached results
 
 // ------------------------- Health check & monitoring -------------------------
 app.get('/', (c) => c.json({ success: true, service: 'BGTtracker API', status: 'running' }));
+
+// For a load balancer or uptime monitor: is the API up, and can it reach the database?
+app.get('/health', async (c) => {
+    try {
+        await getDbPool().request().query('SELECT 1');
+        return c.json({ success: true, status: 'ok', database: 'connected' });
+    } catch {
+        return c.json({ success: false, status: 'unavailable', database: 'unreachable' }, 503);
+    }
+});
 app.route('/metrics', metricsRoutes);
 
 // ---------------------------------- Routes -----------------------------------

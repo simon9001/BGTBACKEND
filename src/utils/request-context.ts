@@ -1,5 +1,6 @@
 import type { Context } from 'hono';
 import { getContext } from 'hono/context-storage';
+import { env } from '../config/env.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import type { AppEnv } from '../types/hono.js';
 
@@ -19,7 +20,11 @@ export interface RequestMeta {
 }
 
 /** Client IP address of a request. */
-export const clientIp = (c: Context): string => getConnInfo(c).remote.address ?? 'unknown';
+export const clientIp = (c: Context): string => {
+    // Behind a reverse proxy every connection comes from the proxy; it names the real client
+    const forwarded = env.TRUST_PROXY ? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() : undefined;
+    return forwarded || getConnInfo(c).remote.address || 'unknown';
+};
 
 /**
  * Request id, IP and user agent of the request being handled.
