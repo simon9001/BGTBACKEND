@@ -36,15 +36,15 @@ export const getTrackerService = async (fyId: number) => {
             SELECT p.procurement_id, p.reference, p.title, p.section_id, p.budget_line_id, p.owner_id, p.owner_name,
                    p.category_id, p.category, p.priority_id, p.priority, p.status,
                    p.scm_officer_id, p.scm_officer, p.acquisition_method_id, p.acquisition_method, p.tender_float_date, p.tender_opening_date, p.tender_days,
-                   p.is_escalated, p.escalated_to, p.progress_percent, p.notes
+                   p.is_escalated, p.escalated_to, p.escalation_note, p.progress_percent, p.notes
             FROM dbo.vw_Procurements p
             WHERE p.fy_id = @fy_id
             ORDER BY p.reference, p.procurement_id;
 
             -- Latest update of each step (the sheet has one cell per step)
-            SELECT e.procurement_id, ws.code AS stage_code, e.status, e.event_date
+            SELECT e.event_id, e.procurement_id, ws.code AS stage_code, e.status, e.event_date
             FROM (
-                SELECT ev.procurement_id, ev.stage_id, ev.status, ev.event_date,
+                SELECT ev.event_id, ev.procurement_id, ev.stage_id, ev.status, ev.event_date,
                        ROW_NUMBER() OVER (PARTITION BY ev.procurement_id, ev.stage_id ORDER BY ev.event_date DESC, ev.event_id DESC) AS row_no
                 FROM dbo.StageEvents ev
                 JOIN dbo.Procurements p ON p.procurement_id = ev.procurement_id AND p.is_deleted = 0 AND p.fy_id = @fy_id
@@ -52,7 +52,7 @@ export const getTrackerService = async (fyId: number) => {
             JOIN dbo.WorkflowStages ws ON ws.stage_id = e.stage_id
             WHERE e.row_no = 1;
 
-            SELECT m.memo_id, m.reference, m.title, m.owner_id, u.full_name AS owner_name,
+            SELECT m.memo_id, m.reference, m.title, m.fy_id, m.owner_id, u.full_name AS owner_name,
                    m.category_id, cat.value AS category, m.priority_id, pr.value AS priority,
                    m.delivered_date, m.approved_date, m.dg_status, m.status, m.notes
             FROM dbo.Memos m
@@ -62,7 +62,7 @@ export const getTrackerService = async (fyId: number) => {
             WHERE m.is_deleted = 0 AND m.fy_id = @fy_id
             ORDER BY m.reference, m.memo_id;
 
-            SELECT t.task_id, t.title, t.section_id, t.owner_id, u.full_name AS owner_name, t.priority_id, pr.value AS priority, t.due_date, t.status, t.created_at
+            SELECT t.task_id, t.title, t.description, t.procurement_id, t.section_id, t.owner_id, u.full_name AS owner_name, t.priority_id, pr.value AS priority, t.due_date, t.status, t.created_at
             FROM dbo.Tasks t
             JOIN dbo.Users u         ON u.user_id = t.owner_id
             LEFT JOIN dbo.Lookups pr ON pr.lookup_id = t.priority_id
@@ -95,7 +95,7 @@ export const getTrackerService = async (fyId: number) => {
             ...p,
             steps: Object.fromEntries(events
                 .filter((e) => e.procurement_id === p.procurement_id)
-                .map((e) => [e.stage_code, { status: e.status, event_date: e.event_date }])),
+                .map((e) => [e.stage_code, { event_id: e.event_id, status: e.status, event_date: e.event_date }])),
         })),
         memos,
         tasks,

@@ -30,6 +30,51 @@ pnpm dev                        # http://localhost:4000
 | `pnpm db:seed-sa` | Create the system administrator account, or make an existing account the system administrator |
 | `pnpm db:seed-tracker` | Import `src/db/data/tracker-data.json`, the git-ignored data from ICT Task Tracker 26_27.xlsx (safe to re-run). See `tracker-data.example.json` for the format |
 
+## Deploying to a server
+
+The real tracker data is not in git. Copy `src/db/data/tracker-data.json` to the server by a private route.
+
+```bash
+pnpm install --frozen-lockfile
+pnpm build
+
+cp .env.example .env                          # then fill it in (see the checklist below)
+
+# First install only, in this order. Create the empty database in SSMS first.
+pnpm db:migrate
+pnpm db:seed-admin -- "Head of ICT Name" head@kenha.co.ke "ARealPassword1"
+pnpm db:seed-sa -- sa@kenha.co.ke "System Administrator Name" "ARealPassword2"
+pnpm db:seed-tracker
+
+NODE_ENV=production node dist/index.js        # run under a service manager so it restarts
+```
+
+Importing again is safe: it adds only what is missing and never overwrites changes made in the app.
+For a later release: install, build, `pnpm db:migrate`, restart.
+
+### Checklist before going live
+
+| Setting | What it needs |
+|---|---|
+| `NODE_ENV` | `production` |
+| `JWT_SECRET` | A new long random value, different from any development one |
+| `CORS_ORIGIN` | The address the frontend is served from, such as `https://ict-tracker.kenha.co.ke` |
+| `SQL_USER` | A login with rights on this database only, not `sa` |
+| `SQL_ENCRYPT` | `true`, unless SQL Server is on the same machine |
+| `SQL_TRUST_SERVER_CERTIFICATE` | `false` once SQL Server has a proper certificate |
+| `TRUST_PROXY` | `true` only behind IIS or nginx; otherwise the forwarded address can be forged |
+| `METRICS_TOKEN` | A long random value, or `/metrics` stays off |
+
+The API warns at start-up about settings that still look like a developer's.
+
+Also needed, outside the code:
+
+- **HTTPS** in front of the API and the frontend, because passwords and tokens cross the network.
+- **Database backups** that have been restored once as a test. The database uses the FULL recovery model, so it also needs log backups or its log keeps growing.
+- **Real staff accounts**: imported officers have placeholder emails and cannot log in until the system administrator sets a real email and password under Users.
+- **Run one API process.** The read cache lives in the process, so with several, a save in one would not clear the others.
+- **Monitoring**: point an uptime check at `GET /health`, which also checks the database.
+
 ## Folder structure
 
 Each feature has its own folder with three layers:
