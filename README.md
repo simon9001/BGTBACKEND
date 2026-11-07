@@ -168,7 +168,7 @@ All routes are under `/api` and need `Authorization: Bearer <token>`, except `PO
 | Users | `GET /users/directory` · admin: `GET/POST /users` · `GET/PUT /users/:id` · `PUT /users/:id/reset-password` |
 | Settings | `GET/POST /lookups` · `PUT /lookups/:id` · `GET/POST /financial-years` · `GET /financial-years/current` · `PUT /financial-years/:id` · `PUT /financial-years/:id/set-current` · `GET/POST /workflow-stages` · `PUT /workflow-stages/:id` |
 | Budget lines | `GET/POST /budget-lines` · `GET/PUT/DELETE /budget-lines/:id` · `PUT/DELETE /budget-lines/:id/allocations/:fyId` |
-| Procurements | `GET/POST /procurements` · `GET/PUT/DELETE /procurements/:id` · `POST /procurements/:id/stages` · `DELETE /procurements/:id/stages/:eventId` |
+| Procurements | `GET/POST /procurements` · `GET/PUT/DELETE /procurements/:id` · `POST /procurements/:id/stages` · `PUT/DELETE /procurements/:id/stages/:eventId` |
 | Tasks | `GET/POST /tasks` · `PUT/DELETE /tasks/:id` |
 | Contracts | `GET/POST /contracts` · `GET/PUT/DELETE /contracts/:id` |
 | Invoices | `GET/POST /invoices` · `GET/PUT/DELETE /invoices/:id` |
@@ -186,7 +186,11 @@ Responses look like `{ success: true, data, pagination? }` or `{ success: false,
   - *Approved/Completed* moves it to the next step.
   - Any other status keeps it at that step.
   - **Overdue** means the item has spent more days at its current step than that step's `sla_days`.
-- **Budget:** planned amounts across years cannot exceed the line total (qty × unit price).
+- **Correcting a step** (`PUT /procurements/:id/stages/:eventId`) changes that update's date or outcome, and the audit log keeps the old value.
+- **Steps with no date:** where the sheet ticked a step without a date, `date_known` is 0. The row shows "Date not recorded" until an officer enters the real date, and it does not count towards step durations.
+- **Budget:** planned amounts across years cannot exceed the line total (qty × unit price), and a year's plan cannot drop below what has been paid in it.
+- **Actual spending:** the sheets' Expenditure Q1–Q4 are worked out from payments, by payment date, and cannot be typed.
+- **Balance:** a line's contracts cannot exceed its total, and a payment cannot exceed the plan for its year. `GET /dashboard/balance-checks` lists any line that is out of balance.
 - **Money flow:**
   - Total invoices cannot exceed the contract value.
   - Only *Approved* invoices can be paid.

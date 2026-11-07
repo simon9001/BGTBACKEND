@@ -4,6 +4,7 @@ import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { syncInvoicePaidStatus } from '../invoices/invoice.service.js';
 import { HttpError } from '../utils/http-error.js';
+import { toCents } from '../utils/money.js';
 import { toOffset } from '../utils/pagination.js';
 import type { CreatePaymentInput, PaymentQuery } from '../validators/invoice.validators.js';
 
@@ -119,6 +120,26 @@ export const createPaymentService = async (input: CreatePaymentInput, actorId: n
         if (!invoice.ok) {
             const remaining = Number(invoice.amount) - Number(invoice.paid);
             throw new HttpError(400, `Payment exceeds the invoice balance. Remaining balance: ${remaining.toLocaleString()}`);
+        }
+
+        // A budget line cannot be paid more in a year than is planned for that year.
+        // Activities with no budget line behind them have no plan to keep within.
+        const plan = await new sql.Request(tx)
+            .input('invoice_id', sql.Int, input.invoice_id)
+            .input('payment_date', sql.Date, input.payment_date)
+            .query(`SELECT bl.code, fy.code AS fy_code, ISNULL(a.planned_amount, 0) AS planned, ISNULL(v.paid_amount, 0) AS paid
+                    FROM dbo.Invoices i
+                    JOIN dbo.Contracts c        ON c.contract_id = i.contract_id
+                    JOIN dbo.Procurements p     ON p.procurement_id = c.procurement_id
+                    JOIN dbo.BudgetLines bl     ON bl.budget_line_id = p.budget_line_id
+                    JOIN dbo.FinancialYears fy  ON @payment_date BETWEEN fy.start_date AND fy.end_date
+                    LEFT JOIN dbo.BudgetAllocations a    ON a.budget_line_id = bl.budget_line_id AND a.fy_id = fy.fy_id
+                    LEFT JOIN dbo.vw_BudgetLineActuals v ON v.budget_line_id = bl.budget_line_id AND v.fy_id = fy.fy_id
+                    WHERE i.invoice_id = @invoice_id`);
+        const line = plan.recordset[0];
+        if (line && toCents(Number(line.paid) + input.amount) > toCents(Number(line.planned))) {
+            const left = Number(line.planned) - Number(line.paid);
+            throw new HttpError(400, `Payment exceeds the FY ${line.fy_code} plan of budget line ${line.code ?? ''}. Left in that year's plan: ${left.toLocaleString()}. Change the plan first if this is right.`);
         }
 
         const result = await new sql.Request(tx)

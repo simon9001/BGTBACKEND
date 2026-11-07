@@ -19,12 +19,15 @@ export interface TaskRow {
     procurement_id: number | null;
     section_id: number | null;
     priority_id: number | null;
+    category_id: number | null;
     due_date: string | null;
     status: string;
+    is_escalated: boolean;
+    escalated_to: string | null;
 }
 
-const ROW_COLUMNS = `task_id, title, description, owner_id, procurement_id, section_id, priority_id,
-    CONVERT(CHAR(10), due_date, 23) AS due_date, status`;
+const ROW_COLUMNS = `task_id, title, description, owner_id, procurement_id, section_id, priority_id, category_id,
+    CONVERT(CHAR(10), due_date, 23) AS due_date, status, is_escalated, escalated_to`;
 
 // A task is overdue when it is still open and its due date has passed
 const IS_OVERDUE = `CASE WHEN t.status IN ('Open', 'In Progress') AND t.due_date < CAST(SYSDATETIME() AS DATE) THEN 1 ELSE 0 END`;
@@ -38,6 +41,7 @@ export const listTasksService = async (query: TaskQuery & QuarterRange, currentU
         LEFT JOIN dbo.Procurements p ON p.procurement_id = t.procurement_id
         LEFT JOIN dbo.Lookups pr     ON pr.lookup_id = t.priority_id
         LEFT JOIN dbo.Lookups sec    ON sec.lookup_id = t.section_id
+        LEFT JOIN dbo.Lookups cat    ON cat.lookup_id = t.category_id
         WHERE t.is_deleted = 0
           AND (@owner_id IS NULL OR t.owner_id = @owner_id)
           AND (@quarter_from IS NULL OR COALESCE(t.due_date, CAST(t.created_at AS DATE)) BETWEEN @quarter_from AND @quarter_to)
@@ -61,7 +65,7 @@ export const listTasksService = async (query: TaskQuery & QuarterRange, currentU
 
             SELECT t.task_id, t.title, t.description, t.owner_id, u.full_name AS owner_name,
                    t.procurement_id, p.title AS procurement_title, t.section_id, sec.value AS section, t.priority_id, pr.value AS priority,
-                   t.due_date, t.status, CAST(${IS_OVERDUE} AS BIT) AS is_overdue, t.created_at, t.updated_at
+                   t.category_id, cat.value AS category, t.is_escalated, t.escalated_to, t.due_date, t.status, CAST(${IS_OVERDUE} AS BIT) AS is_overdue, t.created_at, t.updated_at
             ${from}
             ORDER BY CASE WHEN t.due_date IS NULL THEN 1 ELSE 0 END, t.due_date, t.task_id DESC
             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
@@ -92,10 +96,13 @@ export const createTaskService = async (input: Omit<CreateTaskInput, 'owner_id'>
             .input('priority_id', sql.Int, input.priority_id ?? null)
             .input('due_date', sql.Date, input.due_date ?? null)
             .input('status', sql.NVarChar(20), input.status)
+            .input('category_id', sql.Int, input.category_id ?? null)
+            .input('is_escalated', sql.Bit, input.is_escalated)
+            .input('escalated_to', sql.NVarChar(150), input.is_escalated ? input.escalated_to : null)
             .input('created_by', sql.Int, actorId)
-            .query(`INSERT INTO dbo.Tasks (title, description, owner_id, procurement_id, section_id, priority_id, due_date, status, created_by)
+            .query(`INSERT INTO dbo.Tasks (title, description, owner_id, procurement_id, section_id, priority_id, category_id, due_date, status, is_escalated, escalated_to, created_by)
                     OUTPUT INSERTED.task_id
-                    VALUES (@title, @description, @owner_id, @procurement_id, @section_id, @priority_id, @due_date, @status, @created_by);`);
+                    VALUES (@title, @description, @owner_id, @procurement_id, @section_id, @priority_id, @category_id, @due_date, @status, @is_escalated, @escalated_to, @created_by);`);
 
         const taskId: number = result.recordset[0].task_id;
         const task = (await new sql.Request(tx)
@@ -109,6 +116,9 @@ export const createTaskService = async (input: Omit<CreateTaskInput, 'owner_id'>
 
 // Update a task. Only fields present in `input` change.
 export const updateTaskService = async (before: TaskRow, input: UpdateTaskInput, actorId: number): Promise<TaskRow> => {
+    const isEscalated = input.is_escalated ?? before.is_escalated;
+    const escalatedTo = input.escalated_to === undefined ? before.escalated_to : input.escalated_to;
+
     return withTransaction(async (tx) => {
         const result = await new sql.Request(tx)
             .input('id', sql.Int, before.task_id)
@@ -120,9 +130,13 @@ export const updateTaskService = async (before: TaskRow, input: UpdateTaskInput,
             .input('priority_id', sql.Int, input.priority_id === undefined ? before.priority_id : input.priority_id)
             .input('due_date', sql.Date, input.due_date === undefined ? before.due_date : input.due_date)
             .input('status', sql.NVarChar(20), input.status ?? before.status)
+            .input('category_id', sql.Int, input.category_id === undefined ? before.category_id : input.category_id)
+            .input('is_escalated', sql.Bit, isEscalated)
+            .input('escalated_to', sql.NVarChar(150), isEscalated ? escalatedTo : null)
             .query(`UPDATE dbo.Tasks
                     SET title = @title, description = @description, owner_id = @owner_id, procurement_id = @procurement_id, section_id = @section_id,
-                        priority_id = @priority_id, due_date = @due_date, status = @status, updated_at = SYSUTCDATETIME()
+                        priority_id = @priority_id, category_id = @category_id, due_date = @due_date, status = @status,
+                        is_escalated = @is_escalated, escalated_to = @escalated_to, updated_at = SYSUTCDATETIME()
                     WHERE task_id = @id;
                     SELECT ${ROW_COLUMNS} FROM dbo.Tasks WHERE task_id = @id;`);
 

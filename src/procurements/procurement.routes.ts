@@ -25,8 +25,9 @@ procurementRoutes.put('/:id', canWrite, procurementControllers.updateProcurement
 // Delete a procurement (owner or Head of ICT)
 procurementRoutes.delete('/:id', canWrite, procurementControllers.deleteProcurement);
 
-// Record a workflow step update / undo one recorded by mistake
+// Record a workflow step update / correct one / undo one recorded by mistake
 procurementRoutes.post('/:id/stages', canWrite, procurementControllers.recordStageEvent);
+procurementRoutes.put('/:id/stages/:eventId', canWrite, procurementControllers.correctStageEvent);
 procurementRoutes.delete('/:id/stages/:eventId', canWrite, procurementControllers.deleteStageEvent);
 
 export default procurementRoutes;

@@ -3,6 +3,7 @@ import type { QuarterRange } from '../validators/common.validators.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
+import { toCents } from '../utils/money.js';
 import { toOffset } from '../utils/pagination.js';
 import type { ContractQuery, CreateContractInput, UpdateContractInput } from '../validators/contract.validators.js';
 
@@ -135,9 +136,35 @@ export const getContractRowService = async (contractId: number): Promise<Contrac
 
 // ------------------------------- Commands ------------------------------------
 
+// A budget line's contracts may not add up to more than the line's total.
+// Activities with no budget line behind them have no total to keep within.
+const assertWithinLineTotal = async (tx: sql.Transaction, procurementId: number, value: number, excludeContractId: number | null): Promise<void> => {
+    const result = await new sql.Request(tx)
+        .input('procurement_id', sql.Int, procurementId)
+        .input('exclude_id', sql.Int, excludeContractId)
+        .query(`SELECT bl.code, bl.total_amount,
+                       ISNULL((SELECT SUM(oc.contract_value)
+                               FROM dbo.Contracts oc
+                               JOIN dbo.Procurements op ON op.procurement_id = oc.procurement_id AND op.is_deleted = 0
+                               WHERE op.budget_line_id = bl.budget_line_id AND oc.is_deleted = 0 AND oc.status <> 'Terminated'
+                                 AND (@exclude_id IS NULL OR oc.contract_id <> @exclude_id)), 0) AS other_contracts
+                FROM dbo.Procurements p
+                JOIN dbo.BudgetLines bl ON bl.budget_line_id = p.budget_line_id
+                WHERE p.procurement_id = @procurement_id`);
+    const line = result.recordset[0];
+    if (!line) return;
+
+    const remaining = Number(line.total_amount) - Number(line.other_contracts);
+    if (toCents(value) > toCents(remaining)) {
+        throw new HttpError(400, `Contracts would exceed the total of budget line ${line.code ?? ''}. Remaining on the line: ${remaining.toLocaleString()}`);
+    }
+};
+
 // Create a contract for a procurement
 export const createContractService = async (input: CreateContractInput, actorId: number): Promise<number> => {
     return withTransaction(async (tx) => {
+        if (input.status !== 'Terminated') await assertWithinLineTotal(tx, input.procurement_id, input.contract_value, null);
+
         const result = await new sql.Request(tx)
             .input('procurement_id', sql.Int, input.procurement_id)
             .input('contract_number', sql.NVarChar(50), input.contract_number)
@@ -167,6 +194,10 @@ export const updateContractService = async (before: ContractRow, input: UpdateCo
     }
 
     await withTransaction(async (tx) => {
+        if ((input.status ?? before.status) !== 'Terminated') {
+            await assertWithinLineTotal(tx, before.procurement_id, Number(input.contract_value ?? before.contract_value), before.contract_id);
+        }
+
         const result = await new sql.Request(tx)
             .input('id', sql.Int, before.contract_id)
             .input('contract_number', sql.NVarChar(50), input.contract_number ?? before.contract_number)

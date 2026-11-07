@@ -24,10 +24,11 @@ const findTaskOrFail = async (taskId: number) => {
 };
 
 // Validates optional references in a task body
-const checkReferences = async (input: { procurement_id?: number | null; priority_id?: number | null; section_id?: number | null }) => {
+const checkReferences = async (input: { procurement_id?: number | null; priority_id?: number | null; section_id?: number | null; category_id?: number | null }) => {
     await assertLookups([
         { field: 'priority_id', id: input.priority_id, type: 'priority' },
         { field: 'section_id', id: input.section_id, type: 'section' },
+        { field: 'category_id', id: input.category_id, type: 'category' },
     ]);
     if (input.procurement_id != null && !(await getProcurementRowService(input.procurement_id))) {
         throw new HttpError(400, 'procurement_id does not match an existing procurement');

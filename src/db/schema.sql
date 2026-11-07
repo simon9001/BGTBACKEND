@@ -110,7 +110,8 @@ GO
 /* -----------------------------------------------------------------------------
    BudgetAllocations - planned spend of a budget line per financial year.
    A multi-year line (e.g. Data Centre 43M in 26/27 + 27M in 27/28) has one row
-   per year. q1..q4 hold the optional quarterly plan for that year.
+   per year. What was actually spent in each quarter comes from Payments, through
+   vw_BudgetLineActuals, so it can never disagree with the payments recorded.
 ----------------------------------------------------------------------------- */
 IF OBJECT_ID('dbo.BudgetAllocations', 'U') IS NULL
 CREATE TABLE dbo.BudgetAllocations (
@@ -118,12 +119,8 @@ CREATE TABLE dbo.BudgetAllocations (
     budget_line_id  INT           NOT NULL CONSTRAINT FK_BudgetAllocations_line REFERENCES dbo.BudgetLines(budget_line_id),
     fy_id           INT           NOT NULL CONSTRAINT FK_BudgetAllocations_fy REFERENCES dbo.FinancialYears(fy_id),
     planned_amount  DECIMAL(18,2) NOT NULL CONSTRAINT DF_BudgetAllocations_planned DEFAULT 0,
-    q1_amount       DECIMAL(18,2) NOT NULL CONSTRAINT DF_BudgetAllocations_q1 DEFAULT 0,
-    q2_amount       DECIMAL(18,2) NOT NULL CONSTRAINT DF_BudgetAllocations_q2 DEFAULT 0,
-    q3_amount       DECIMAL(18,2) NOT NULL CONSTRAINT DF_BudgetAllocations_q3 DEFAULT 0,
-    q4_amount       DECIMAL(18,2) NOT NULL CONSTRAINT DF_BudgetAllocations_q4 DEFAULT 0,
     CONSTRAINT UQ_BudgetAllocations_line_fy UNIQUE (budget_line_id, fy_id),
-    CONSTRAINT CK_BudgetAllocations_amounts CHECK (planned_amount >= 0 AND q1_amount >= 0 AND q2_amount >= 0 AND q3_amount >= 0 AND q4_amount >= 0)
+    CONSTRAINT CK_BudgetAllocations_amounts CHECK (planned_amount >= 0)
 );
 GO
 
@@ -190,7 +187,8 @@ GO
 
 /* -----------------------------------------------------------------------------
    StageEvents - history of every step update an officer records, e.g.
-   "eGP approval by HOD - Approved - 2026-09-07". Never updated, only inserted.
+   "eGP approval by HOD - Approved - 2026-09-07". A new outcome is a new row. A row
+   only changes when an officer corrects its date, and AuditLogs keeps the old value.
 ----------------------------------------------------------------------------- */
 IF OBJECT_ID('dbo.StageEvents', 'U') IS NULL
 CREATE TABLE dbo.StageEvents (
@@ -488,4 +486,78 @@ BEGIN
     ALTER TABLE dbo.StageEvents DROP CONSTRAINT CK_StageEvents_status;
     ALTER TABLE dbo.StageEvents ADD CONSTRAINT CK_StageEvents_status CHECK (status IN ('Pending', 'In Progress', 'In Review', 'Approved', 'Completed', 'Rejected', 'Returned'));
 END
+GO
+
+/* -----------------------------------------------------------------------------
+   Steps the sheet ticked "Yes" with no date. event_date must hold something, so
+   date_known = 0 says it is only a placeholder: it is not shown as a real date
+   and does not count towards how long a step took.
+----------------------------------------------------------------------------- */
+IF COL_LENGTH('dbo.StageEvents', 'date_known') IS NULL
+ALTER TABLE dbo.StageEvents ADD date_known BIT NOT NULL CONSTRAINT DF_StageEvents_date_known DEFAULT 1;
+GO
+
+UPDATE dbo.StageEvents SET date_known = 0
+WHERE date_known = 1 AND notes = 'Imported from tracker: marked Yes, date not recorded in the sheet';
+GO
+
+/* -----------------------------------------------------------------------------
+   Every row of the All list has Escalated and Escalated To columns, and task rows
+   also have a Category. Escalated To holds a name, as on the sheet.
+----------------------------------------------------------------------------- */
+IF COL_LENGTH('dbo.Memos', 'is_escalated') IS NULL
+ALTER TABLE dbo.Memos ADD is_escalated BIT NOT NULL CONSTRAINT DF_Memos_escalated DEFAULT 0, escalated_to NVARCHAR(150) NULL;
+GO
+
+IF COL_LENGTH('dbo.Tasks', 'is_escalated') IS NULL
+ALTER TABLE dbo.Tasks ADD is_escalated BIT NOT NULL CONSTRAINT DF_Tasks_escalated DEFAULT 0, escalated_to NVARCHAR(150) NULL;
+GO
+
+IF COL_LENGTH('dbo.Tasks', 'category_id') IS NULL
+ALTER TABLE dbo.Tasks ADD category_id INT NULL CONSTRAINT FK_Tasks_category REFERENCES dbo.Lookups(lookup_id);
+GO
+
+/* -----------------------------------------------------------------------------
+   The sheets' Expenditure Q1-Q4 are actual spending, which now comes from Payments.
+   Removes the old typed columns, but only where they are all zero, so no figure is
+   lost: anywhere they hold amounts, those must be recorded as payments first.
+----------------------------------------------------------------------------- */
+IF COL_LENGTH('dbo.BudgetAllocations', 'q1_amount') IS NOT NULL
+EXEC(N'
+IF NOT EXISTS (SELECT 1 FROM dbo.BudgetAllocations WHERE q1_amount <> 0 OR q2_amount <> 0 OR q3_amount <> 0 OR q4_amount <> 0)
+BEGIN
+    ALTER TABLE dbo.BudgetAllocations DROP CONSTRAINT CK_BudgetAllocations_amounts, DF_BudgetAllocations_q1, DF_BudgetAllocations_q2, DF_BudgetAllocations_q3, DF_BudgetAllocations_q4;
+    ALTER TABLE dbo.BudgetAllocations DROP COLUMN q1_amount, q2_amount, q3_amount, q4_amount;
+    ALTER TABLE dbo.BudgetAllocations ADD CONSTRAINT CK_BudgetAllocations_amounts CHECK (planned_amount >= 0);
+END');
+GO
+
+/* -----------------------------------------------------------------------------
+   vw_BudgetLineActuals - what was actually paid on each budget line, per financial
+   year and quarter (the sheets' Expenditure Q1-Q4). A payment belongs to the year
+   and quarter of its payment date.
+----------------------------------------------------------------------------- */
+CREATE OR ALTER VIEW dbo.vw_BudgetLineActuals AS
+SELECT p.budget_line_id, fy.fy_id, fy.code AS fy_code,
+       SUM(CASE WHEN ((MONTH(pay.payment_date) + 5) % 12) / 3 = 0 THEN pay.amount ELSE 0 END) AS q1_actual,
+       SUM(CASE WHEN ((MONTH(pay.payment_date) + 5) % 12) / 3 = 1 THEN pay.amount ELSE 0 END) AS q2_actual,
+       SUM(CASE WHEN ((MONTH(pay.payment_date) + 5) % 12) / 3 = 2 THEN pay.amount ELSE 0 END) AS q3_actual,
+       SUM(CASE WHEN ((MONTH(pay.payment_date) + 5) % 12) / 3 = 3 THEN pay.amount ELSE 0 END) AS q4_actual,
+       SUM(pay.amount) AS paid_amount
+FROM dbo.Payments pay
+JOIN dbo.Invoices i        ON i.invoice_id = pay.invoice_id AND i.is_deleted = 0
+JOIN dbo.Contracts c       ON c.contract_id = i.contract_id AND c.is_deleted = 0
+JOIN dbo.Procurements p    ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
+JOIN dbo.FinancialYears fy ON pay.payment_date BETWEEN fy.start_date AND fy.end_date
+WHERE pay.is_deleted = 0 AND p.budget_line_id IS NOT NULL
+GROUP BY p.budget_line_id, fy.fy_id, fy.code;
+GO
+
+/* -----------------------------------------------------------------------------
+   One row per reference, as on the sheet. Skipped where duplicates already exist,
+   so the upgrade still runs; remove them and migrate again to switch it on.
+----------------------------------------------------------------------------- */
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UX_Procurements_reference')
+   AND NOT EXISTS (SELECT reference FROM dbo.Procurements WHERE reference IS NOT NULL AND is_deleted = 0 GROUP BY reference HAVING COUNT(*) > 1)
+CREATE UNIQUE INDEX UX_Procurements_reference ON dbo.Procurements (reference) WHERE reference IS NOT NULL AND is_deleted = 0;
 GO

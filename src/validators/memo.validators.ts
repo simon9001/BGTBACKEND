@@ -27,10 +27,12 @@ const memoFields = {
     dg_status: z.enum(DG_STATUSES).nullish(),
     status: z.enum(PROCUREMENT_STATUSES),
     notes: optionalText(4000),
+    is_escalated: z.boolean(),
+    escalated_to: optionalText(150),
 };
 
 export const CreateMemoSchema = z
-    .object({ ...memoFields, status: memoFields.status.default('Not Started') })
+    .object({ ...memoFields, status: memoFields.status.default('Not Started'), is_escalated: memoFields.is_escalated.default(false) })
     .refine(datesInOrder, datesMessage);
 
 // Every field optional on update

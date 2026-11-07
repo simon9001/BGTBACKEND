@@ -83,6 +83,10 @@ export const RecordStageEventSchema = z.object({
     notes: optionalText(1000),
 });
 
+// PUT /api/procurements/:id/stages/:eventId - correct a step update
+export const CorrectStageEventSchema = RecordStageEventSchema.pick({ status: true, event_date: true });
+
+export type CorrectStageEventInput = z.infer<typeof CorrectStageEventSchema>;
 export type CreateProcurementInput = z.infer<typeof CreateProcurementSchema>;
 export type UpdateProcurementInput = z.infer<typeof UpdateProcurementSchema>;
 export type ProcurementQuery = z.infer<typeof ProcurementQuerySchema>;

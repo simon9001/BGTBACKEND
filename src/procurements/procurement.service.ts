@@ -5,6 +5,7 @@ import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
 import { toOffset } from '../utils/pagination.js';
 import type {
+    CorrectStageEventInput,
     CreateProcurementInput,
     ProcurementQuery,
     RecordStageEventInput,
@@ -22,6 +23,7 @@ import type {
  *   - latest event Approved/Completed -> item moves to the NEXT active step
  *   - any other status (Pending, Rejected, Returned ...) -> item stays at that step
  * "Latest" is by event date, so officers can back-fill older updates safely.
+ * A wrong date is fixed by correcting the update itself, not by adding another.
  */
 
 /** Raw row from dbo.Procurements (used for ownership checks, updates and audit). */
@@ -76,7 +78,7 @@ export const listProcurementsService = async (query: ProcurementQuery & QuarterR
           AND (@budget_line_id IS NULL OR budget_line_id = @budget_line_id)
           AND (@quarter_from IS NULL OR EXISTS (
                 SELECT 1 FROM dbo.StageEvents qe
-                WHERE qe.procurement_id = dbo.vw_Procurements.procurement_id AND qe.event_date BETWEEN @quarter_from AND @quarter_to))
+                WHERE qe.procurement_id = dbo.vw_Procurements.procurement_id AND qe.date_known = 1 AND qe.event_date BETWEEN @quarter_from AND @quarter_to))
           AND (@priority_id IS NULL OR priority_id = @priority_id)
           AND (@no_priority IS NULL OR @no_priority = 0 OR priority_id IS NULL)
           AND (@acquisition_method_id IS NULL OR acquisition_method_id = @acquisition_method_id)
@@ -136,7 +138,7 @@ export const getProcurementDetailService = async (procurementId: number) => {
             SELECT * FROM dbo.vw_Procurements WHERE procurement_id = @id;
 
             SELECT e.event_id, e.stage_id, ws.code AS stage_code, ws.name AS stage_name, ws.stage_group,
-                   e.status, e.event_date, e.notes, e.recorded_by, u.full_name AS recorded_by_name, e.created_at
+                   e.status, e.event_date, e.date_known, e.notes, e.recorded_by, u.full_name AS recorded_by_name, e.created_at
             FROM dbo.StageEvents e
             JOIN dbo.WorkflowStages ws ON ws.stage_id = e.stage_id
             JOIN dbo.Users u ON u.user_id = e.recorded_by
@@ -190,6 +192,21 @@ const bindProcurementFields = (request: sql.Request, p: Omit<ProcurementRow, 'pr
         .input('escalated_to', sql.NVarChar(150), p.escalated_to)
         .input('escalation_note', sql.NVarChar(1000), p.escalation_note)
         .input('notes', sql.NVarChar(sql.MAX), p.notes);
+
+// A memo with no budget line behind it can have a procurement with the same
+// reference to carry its steps. It is one row of the sheet, so one status.
+const syncMemoStatus = async (tx: sql.Transaction, procurementId: number, actorId: number): Promise<void> => {
+    const result = await new sql.Request(tx)
+        .input('id', sql.Int, procurementId)
+        .query(`UPDATE m SET m.status = p.status, m.updated_at = SYSUTCDATETIME()
+                OUTPUT INSERTED.memo_id, DELETED.status AS old_status, INSERTED.status AS new_status
+                FROM dbo.Memos m
+                JOIN dbo.Procurements p ON p.reference = m.reference AND p.budget_line_id IS NULL
+                WHERE p.procurement_id = @id AND m.is_deleted = 0 AND m.status <> p.status`);
+    for (const row of result.recordset) {
+        await writeAudit(tx, { userId: actorId, action: 'UPDATE', entity: 'Memos', entityId: row.memo_id, oldValues: { status: row.old_status }, newValues: { status: row.new_status } });
+    }
+};
 
 // Create a procurement
 export const createProcurementService = async (
@@ -287,6 +304,7 @@ export const updateProcurementService = async (before: ProcurementRow, input: Up
             userId: actorId, action: 'UPDATE', entity: 'Procurements', entityId: before.procurement_id,
             oldValues: before, newValues: result.recordset[0],
         });
+        await syncMemoStatus(tx, before.procurement_id, actorId);
     });
 };
 
@@ -376,8 +394,51 @@ export const recordStageEventService = async (procurementId: number, input: Reco
 
         const eventId: number = result.recordset[0].event_id;
         await recomputeCurrentStage(tx, procurementId);
+        await syncMemoStatus(tx, procurementId, actorId);
         await writeAudit(tx, { userId: actorId, action: 'CREATE', entity: 'StageEvents', entityId: eventId, newValues: { procurement_id: procurementId, ...input } });
         return eventId;
+    });
+};
+
+// Correct the date or outcome of a step update. Returns false if it does not exist.
+export const correctStageEventService = async (procurementId: number, eventId: number, input: CorrectStageEventInput, actorId: number): Promise<boolean> => {
+    return withTransaction(async (tx) => {
+        const existing = await new sql.Request(tx)
+            .input('procurement_id', sql.Int, procurementId)
+            .input('event_id', sql.Int, eventId)
+            .query(`SELECT event_id, stage_id, status, CONVERT(CHAR(10), event_date, 23) AS event_date, date_known, notes
+                    FROM dbo.StageEvents WHERE event_id = @event_id AND procurement_id = @procurement_id`);
+        const before = existing.recordset[0];
+        if (!before) return false;
+
+        // Another update would become the step's latest and hide this correction
+        const later = await new sql.Request(tx)
+            .input('procurement_id', sql.Int, procurementId)
+            .input('stage_id', sql.Int, before.stage_id)
+            .input('event_id', sql.Int, eventId)
+            .input('event_date', sql.Date, input.event_date)
+            .query(`SELECT TOP 1 CONVERT(CHAR(10), event_date, 23) AS event_date
+                    FROM dbo.StageEvents
+                    WHERE procurement_id = @procurement_id AND stage_id = @stage_id AND event_id <> @event_id AND event_date > @event_date
+                    ORDER BY event_date DESC`);
+        if (later.recordset.length > 0) {
+            throw new HttpError(409, `This step has another update dated ${later.recordset[0].event_date}. Remove it in the step history first.`);
+        }
+
+        // A real date replaces the import's placeholder, so its note no longer applies
+        const result = await new sql.Request(tx)
+            .input('event_id', sql.Int, eventId)
+            .input('status', sql.NVarChar(20), input.status)
+            .input('event_date', sql.Date, input.event_date)
+            .query(`UPDATE dbo.StageEvents
+                    SET status = @status, event_date = @event_date, notes = CASE WHEN date_known = 0 THEN NULL ELSE notes END, date_known = 1
+                    OUTPUT INSERTED.event_id, INSERTED.stage_id, INSERTED.status, CONVERT(CHAR(10), INSERTED.event_date, 23) AS event_date, INSERTED.date_known, INSERTED.notes
+                    WHERE event_id = @event_id`);
+
+        await recomputeCurrentStage(tx, procurementId);
+        await syncMemoStatus(tx, procurementId, actorId);
+        await writeAudit(tx, { userId: actorId, action: 'UPDATE', entity: 'StageEvents', entityId: eventId, oldValues: before, newValues: result.recordset[0] });
+        return true;
     });
 };
 
@@ -393,6 +454,7 @@ export const deleteStageEventService = async (procurementId: number, eventId: nu
 
         if (result.recordset.length === 0) return false;
         await recomputeCurrentStage(tx, procurementId);
+        await syncMemoStatus(tx, procurementId, actorId);
         await writeAudit(tx, { userId: actorId, action: 'DELETE', entity: 'StageEvents', entityId: eventId, oldValues: result.recordset[0] });
         return true;
     });

@@ -1,36 +1,18 @@
 import { z } from 'zod';
 import { PaginationQuerySchema, queryQuarter, id, money, optionalText, queryId } from './common.validators.js';
-import { sumAmounts, toCents } from '../utils/money.js';
 
 /**
  * Budget line validators.
  * A budget line is what the department plans to buy; allocations spread its
- * cost over one or more financial years (and optionally quarters).
+ * cost over one or more financial years. Actual spending per quarter is not
+ * entered here: it comes from the payments recorded.
  */
 
-// Planned spend for one financial year. Quarter amounts are optional, but
-// together they may not exceed the planned amount for the year.
-export const AllocationSchema = z
-    .object({
-        planned_amount: money,
-        q1_amount: money.default(0),
-        q2_amount: money.default(0),
-        q3_amount: money.default(0),
-        q4_amount: money.default(0),
-    })
-    .refine((a) => toCents(sumAmounts([a.q1_amount, a.q2_amount, a.q3_amount, a.q4_amount])) <= toCents(a.planned_amount), {
-        message: 'Quarterly amounts cannot add up to more than the planned amount for the year',
-        path: ['planned_amount'],
-    });
+// Planned spend for one financial year
+export const AllocationSchema = z.object({ planned_amount: money });
 
-// One or more figures of a year's plan; the others keep their stored values
-export const PatchAllocationSchema = z.object({
-    planned_amount: money,
-    q1_amount: money,
-    q2_amount: money,
-    q3_amount: money,
-    q4_amount: money,
-}).partial();
+// The plan changed like a sheet cell, kept for the sheet card
+export const PatchAllocationSchema = AllocationSchema.partial();
 
 export const CreateBudgetLineSchema = z
     .object({

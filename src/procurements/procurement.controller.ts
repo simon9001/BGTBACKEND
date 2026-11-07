@@ -2,6 +2,7 @@ import type { Context } from 'hono';
 import type { AppEnv } from '../types/hono.js';
 import { validateBody, validateIdParam, validateQuery } from '../middleware/validation.js';
 import {
+    CorrectStageEventSchema,
     CreateProcurementSchema,
     ProcurementQuerySchema,
     RecordStageEventSchema,
@@ -112,6 +113,23 @@ export const recordStageEvent = async (c: Context<AppEnv>) => {
     await procurementServices.recordStageEventService(procurementId, input, user.user_id);
     const updated = await procurementServices.getProcurementDetailService(procurementId);
     return c.json({ success: true, message: 'Step recorded', data: updated }, 201);
+};
+
+// PUT /api/procurements/:id/stages/:eventId - correct a step's date or outcome
+export const correctStageEvent = async (c: Context<AppEnv>) => {
+    const procurementId = validateIdParam(c, 'id');
+    const eventId = validateIdParam(c, 'eventId');
+    const input = await validateBody(c, CorrectStageEventSchema);
+    const user = c.get('user');
+
+    const procurement = await findProcurementOrFail(procurementId);
+    assertCanEdit(user, procurement.owner_id);
+
+    const corrected = await procurementServices.correctStageEventService(procurementId, eventId, input, user.user_id);
+    if (!corrected) throw new HttpError(404, 'Step update not found for this procurement');
+
+    const updated = await procurementServices.getProcurementDetailService(procurementId);
+    return c.json({ success: true, message: 'Step corrected', data: updated });
 };
 
 // DELETE /api/procurements/:id/stages/:eventId - undo a step recorded by mistake

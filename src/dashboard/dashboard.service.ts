@@ -16,7 +16,7 @@ import { TASK_STATUSES } from '../validators/task.validators.js';
  * Kenyan FY quarters: Q1 Jul-Sep, Q2 Oct-Dec, Q3 Jan-Mar, Q4 Apr-Jun.
  *
  * With a quarter chosen:
- *   budget        = that quarter's plan
+ *   budget        = still the whole year's plan, because plans are per year
  *   payments      = paid within the quarter
  *   invoices      = received within the quarter
  *   contracts     = starting within the quarter
@@ -47,18 +47,12 @@ const DECLARE_FULL_YEAR = `
 const DECLARE_FY_DATES = `${DECLARE_FULL_YEAR}
     IF @q_start IS NOT NULL SELECT @start = @q_start, @end = @q_end;`;
 
-// The plan for the period: one quarter's amount, or the whole year's
-const plannedAmount = (alias: string) => `CASE @quarter
-    WHEN 1 THEN ${alias}.q1_amount WHEN 2 THEN ${alias}.q2_amount
-    WHEN 3 THEN ${alias}.q3_amount WHEN 4 THEN ${alias}.q4_amount
-    ELSE ${alias}.planned_amount END`;
-
 // A date column falls within the chosen quarter (always true with none chosen)
 const inQuarter = (column: string) => `(@q_start IS NULL OR ${column} BETWEEN @q_start AND @q_end)`;
 
 // A procurement had a step recorded within the chosen quarter
 const procurementInQuarter = (alias: string) => `(@q_start IS NULL OR EXISTS (
-    SELECT 1 FROM dbo.StageEvents qe WHERE qe.procurement_id = ${alias}.procurement_id AND qe.event_date BETWEEN @q_start AND @q_end))`;
+    SELECT 1 FROM dbo.StageEvents qe WHERE qe.procurement_id = ${alias}.procurement_id AND qe.date_known = 1 AND qe.event_date BETWEEN @q_start AND @q_end))`;
 
 // Category / owner filter for a table aliased as `alias`
 const categoryOwnerFilter = (alias: string) =>
@@ -83,7 +77,7 @@ export const getSummaryService = async (filters: DashboardFilters) => {
         ${DECLARE_FY_DATES}
 
         SELECT
-            (SELECT ISNULL(SUM(${plannedAmount('a')}), 0)
+            (SELECT ISNULL(SUM(a.planned_amount), 0)
              FROM dbo.BudgetAllocations a
              JOIN dbo.BudgetLines bl ON bl.budget_line_id = a.budget_line_id AND bl.is_deleted = 0
              WHERE a.fy_id = @fy_id AND ${categoryOwnerFilter('bl')}) AS budget,
@@ -155,7 +149,7 @@ export const getBudgetByCategoryService = async (filters: DashboardFilters) => {
         ${DECLARE_FY_DATES}
 
         SELECT cat.lookup_id AS category_id, cat.value AS category, cat.sort_order,
-            ISNULL((SELECT SUM(${plannedAmount('a')})
+            ISNULL((SELECT SUM(a.planned_amount)
                     FROM dbo.BudgetAllocations a
                     JOIN dbo.BudgetLines bl ON bl.budget_line_id = a.budget_line_id AND bl.is_deleted = 0
                     WHERE a.fy_id = @fy_id AND bl.category_id = cat.lookup_id
@@ -179,15 +173,12 @@ export const getBudgetByCategoryService = async (filters: DashboardFilters) => {
         .map((row) => ({ ...row, budget: Number(row.budget), contracted: Number(row.contracted), paid: Number(row.paid) }));
 };
 
-/** Planned vs actual spend per quarter, with running totals. */
+/** Actual spend per quarter against the year's budget, with a running total. */
 export const getQuarterlySpendService = async (filters: DashboardFilters) => {
     const result = await filteredRequest(filters).query(`
         ${DECLARE_FULL_YEAR}
 
-        SELECT
-            ISNULL(SUM(a.planned_amount), 0) AS year_planned,
-            ISNULL(SUM(a.q1_amount), 0) AS q1, ISNULL(SUM(a.q2_amount), 0) AS q2,
-            ISNULL(SUM(a.q3_amount), 0) AS q3, ISNULL(SUM(a.q4_amount), 0) AS q4
+        SELECT ISNULL(SUM(a.planned_amount), 0) AS year_planned
         FROM dbo.BudgetAllocations a
         JOIN dbo.BudgetLines bl ON bl.budget_line_id = a.budget_line_id AND bl.is_deleted = 0
         WHERE a.fy_id = @fy_id AND ${categoryOwnerFilter('bl')};
@@ -204,20 +195,15 @@ export const getQuarterlySpendService = async (filters: DashboardFilters) => {
     const planned = plannedRows[0];
     const actualByQuarter = new Map<number, number>(actualRows.map((row) => [row.quarter, Number(row.actual)]));
 
-    let cumulativePlanned = 0;
     let cumulativeActual = 0;
     return [1, 2, 3, 4].map((quarter) => {
-        const plannedAmount = Number(planned[`q${quarter}`]);
         const actualAmount = actualByQuarter.get(quarter) ?? 0;
-        cumulativePlanned += plannedAmount;
         cumulativeActual += actualAmount;
         return {
             quarter: `Q${quarter}`,
             year_planned: Number(planned.year_planned),
             ...periodOf(fyStart[0].start_date, (quarter - 1) * 3, 3),
-            planned: plannedAmount,
             actual: actualAmount,
-            cumulative_planned: cumulativePlanned,
             cumulative_actual: cumulativeActual,
         };
     });
@@ -259,7 +245,7 @@ export const getStageDurationsService = async (filters: DashboardFilters) => {
             SELECT e.procurement_id, e.stage_id, MIN(e.event_date) AS passed_on
             FROM dbo.StageEvents e
             JOIN dbo.Procurements p ON p.procurement_id = e.procurement_id AND p.is_deleted = 0
-            WHERE e.status IN ('Approved', 'Completed') AND p.fy_id = @fy_id AND ${inQuarter('e.event_date')} AND ${categoryOwnerFilter('p')}
+            WHERE e.status IN ('Approved', 'Completed') AND e.date_known = 1 AND p.fy_id = @fy_id AND ${inQuarter('e.event_date')} AND ${categoryOwnerFilter('p')}
             GROUP BY e.procurement_id, e.stage_id
         ),
         durations AS (
@@ -478,7 +464,7 @@ export const getActivitySummaryService = async (filters: DashboardFilters) => {
         ${DECLARE_FY_DATES}
 
         WITH activities AS (
-            SELECT m.status, pr.value AS priority, 0 AS is_escalated,
+            SELECT m.status, pr.value AS priority, CAST(m.is_escalated AS INT) AS is_escalated,
                    CASE WHEN m.approved_date < CAST(SYSDATETIME() AS DATE) AND m.status <> 'Completed' THEN 1 ELSE 0 END AS is_overdue
             FROM dbo.Memos m
             LEFT JOIN dbo.Lookups pr ON pr.lookup_id = m.priority_id
@@ -490,10 +476,10 @@ export const getActivitySummaryService = async (filters: DashboardFilters) => {
               AND NOT EXISTS (SELECT 1 FROM dbo.Memos m WHERE m.reference = p.reference AND m.is_deleted = 0)
             UNION ALL
             SELECT CASE t.status WHEN 'Open' THEN 'Not Started' WHEN 'Done' THEN 'Completed' ELSE t.status END,
-                   pr.value, 0, 0
+                   pr.value, CAST(t.is_escalated AS INT), 0
             FROM dbo.Tasks t
             LEFT JOIN dbo.Lookups pr ON pr.lookup_id = t.priority_id
-            WHERE t.is_deleted = 0 AND @category_id IS NULL AND (@owner_id IS NULL OR t.owner_id = @owner_id)
+            WHERE t.is_deleted = 0 AND ${categoryOwnerFilter('t')}
               AND COALESCE(t.due_date, CAST(t.created_at AS DATE)) BETWEEN @start AND @end
         )
         SELECT status, priority, is_escalated, is_overdue FROM activities;
@@ -551,13 +537,57 @@ export const getMonthlyTrendService = async (filters: DashboardFilters) => {
 /** The largest budget lines of the year, for the ranked chart. */
 export const getTopBudgetLinesService = async (filters: DashboardFilters) => {
     const result = await filteredRequest(filters).query(`
-        SELECT TOP 8 bl.budget_line_id, bl.code, bl.description, ${plannedAmount('a')} AS planned_amount
+        SELECT TOP 8 bl.budget_line_id, bl.code, bl.description, a.planned_amount AS planned_amount
         FROM dbo.BudgetAllocations a
         JOIN dbo.BudgetLines bl ON bl.budget_line_id = a.budget_line_id AND bl.is_deleted = 0
-        WHERE a.fy_id = @fy_id AND ${plannedAmount('a')} > 0 AND ${categoryOwnerFilter('bl')}
-        ORDER BY ${plannedAmount('a')} DESC, bl.code;
+        WHERE a.fy_id = @fy_id AND a.planned_amount > 0 AND ${categoryOwnerFilter('bl')}
+        ORDER BY a.planned_amount DESC, bl.code;
     `);
     return result.recordset.map((row) => ({ ...row, planned_amount: Number(row.planned_amount) }));
+};
+
+/**
+ * The checks that say the books balance. The API refuses saves that would break
+ * them, so anything listed here got in another way (such as a procurement moved to
+ * another budget line) and needs someone to look at it:
+ *   - a line's yearly plans add up to its Total Sum
+ *   - its contracts do not add up to more than its Total Sum
+ *   - nothing was paid in a year beyond that year's plan
+ */
+export const getBalanceChecksService = async (filters: DashboardFilters) => {
+    const result = await filteredRequest(filters).query(`
+        SELECT bl.budget_line_id, bl.code, bl.description, bl.total_amount,
+               ISNULL((SELECT SUM(a.planned_amount) FROM dbo.BudgetAllocations a WHERE a.budget_line_id = bl.budget_line_id), 0) AS planned,
+               ISNULL((SELECT SUM(c.contract_value)
+                       FROM dbo.Contracts c
+                       JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
+                       WHERE p.budget_line_id = bl.budget_line_id AND c.is_deleted = 0 AND c.status <> 'Terminated'), 0) AS contracted
+        FROM dbo.BudgetLines bl
+        WHERE bl.is_deleted = 0 AND ${categoryOwnerFilter('bl')}
+        ORDER BY bl.code;
+
+        SELECT v.budget_line_id, v.fy_code, v.paid_amount, ISNULL(a.planned_amount, 0) AS planned
+        FROM dbo.vw_BudgetLineActuals v
+        LEFT JOIN dbo.BudgetAllocations a ON a.budget_line_id = v.budget_line_id AND a.fy_id = v.fy_id
+        WHERE v.paid_amount > ISNULL(a.planned_amount, 0);
+    `);
+
+    const [lines, overPaid] = result.recordsets as sql.IRecordSet<any>[];
+    const issues: { budget_line_id: number; code: string | null; description: string; problem: string }[] = [];
+    for (const line of lines) {
+        const report = (problem: string) => issues.push({ budget_line_id: line.budget_line_id, code: line.code, description: line.description, problem });
+        const total = Number(line.total_amount);
+        const planned = Number(line.planned);
+        const contracted = Number(line.contracted);
+
+        if (planned !== total) report(`Yearly plans add up to ${planned.toLocaleString()}, but the Total Sum is ${total.toLocaleString()}`);
+        if (contracted > total) report(`Contracts add up to ${contracted.toLocaleString()}, more than the Total Sum of ${total.toLocaleString()}`);
+        for (const over of overPaid.filter((row) => row.budget_line_id === line.budget_line_id)) {
+            report(`Paid ${Number(over.paid_amount).toLocaleString()} in FY ${over.fy_code}, more than that year's plan of ${Number(over.planned).toLocaleString()}`);
+        }
+    }
+
+    return { lines_checked: lines.length, issues };
 };
 
 /** The latest step updates and payments. */
@@ -568,7 +598,7 @@ export const getRecentActivityService = async (filters: DashboardFilters) => {
         JOIN dbo.Procurements p    ON p.procurement_id = e.procurement_id AND p.is_deleted = 0
         JOIN dbo.WorkflowStages ws ON ws.stage_id = e.stage_id
         JOIN dbo.Users u           ON u.user_id = e.recorded_by
-        WHERE p.fy_id = @fy_id AND ${inQuarter('e.event_date')} AND ${categoryOwnerFilter('p')}
+        WHERE p.fy_id = @fy_id AND e.date_known = 1 AND ${inQuarter('e.event_date')} AND ${categoryOwnerFilter('p')}
         ORDER BY e.event_date DESC, e.event_id DESC;
 
         SELECT TOP 6 pay.payment_id, pay.amount, pay.payment_date, pay.reference, c.supplier_name, i.invoice_id, i.invoice_number

@@ -95,6 +95,7 @@ export const getBreakdowns = dashboardHandler('breakdowns', dashboardServices.ge
 
 // GET /api/dashboard/activity-summary - the tracker's own Dashboard sheet figures
 export const getActivitySummary = dashboardHandler('activity-summary', dashboardServices.getActivitySummaryService);
+export const getBalanceChecks = dashboardHandler('balance-checks', dashboardServices.getBalanceChecksService);
 
 // GET /api/dashboard/monthly-trend - invoices and payments per month of the year
 export const getMonthlyTrend = dashboardHandler('monthly-trend', dashboardServices.getMonthlyTrendService);

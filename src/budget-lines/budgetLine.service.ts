@@ -1,4 +1,5 @@
 import sql from 'mssql';
+import type { QuarterRange } from '../validators/common.validators.js';
 import { getDbPool, withTransaction } from '../db/dbconfig.js';
 import { writeAudit } from '../audit/audit.service.js';
 import { HttpError } from '../utils/http-error.js';
@@ -14,8 +15,10 @@ import type {
 /**
  * Budget lines service.
  *
- * Rule: the planned amounts across all financial years may not exceed the
- * line's total cost (quantity x unit price).
+ * Rules that keep a line balanced:
+ *   - the planned amounts across all financial years may not exceed the line's
+ *     total cost (quantity x unit price)
+ *   - a year's plan may not drop below what has already been paid in that year
  */
 
 /** Raw row from dbo.BudgetLines (used for ownership checks and audit). */
@@ -55,20 +58,26 @@ const DISPLAY_JOINS = `
 // ------------------------------- Queries -------------------------------------
 
 // Paginated list with filters. With fy_id, each row also carries that year's plan.
-export const listBudgetLinesService = async (query: BudgetLineQuery) => {
+export const listBudgetLinesService = async (query: BudgetLineQuery & QuarterRange) => {
     const db = getDbPool();
     const from = `${DISPLAY_JOINS}
         LEFT JOIN dbo.BudgetAllocations fa ON fa.budget_line_id = bl.budget_line_id AND fa.fy_id = @fy_id
         WHERE bl.is_deleted = 0
           AND (@fy_id IS NULL OR fa.allocation_id IS NOT NULL)
-          AND (@quarter IS NULL OR CASE @quarter WHEN 1 THEN fa.q1_amount WHEN 2 THEN fa.q2_amount WHEN 3 THEN fa.q3_amount ELSE fa.q4_amount END > 0)
+          AND (@quarter_from IS NULL OR EXISTS (
+                SELECT 1 FROM dbo.Payments pay
+                JOIN dbo.Invoices i     ON i.invoice_id = pay.invoice_id AND i.is_deleted = 0
+                JOIN dbo.Contracts c    ON c.contract_id = i.contract_id AND c.is_deleted = 0
+                JOIN dbo.Procurements p ON p.procurement_id = c.procurement_id AND p.is_deleted = 0
+                WHERE p.budget_line_id = bl.budget_line_id AND pay.is_deleted = 0 AND pay.payment_date BETWEEN @quarter_from AND @quarter_to))
           AND (@category_id IS NULL OR bl.category_id = @category_id)
           AND (@owner_id IS NULL OR bl.owner_id = @owner_id)
           AND (@search IS NULL OR bl.description LIKE '%' + @search + '%' OR bl.code LIKE '%' + @search + '%')`;
 
     const result = await db.request()
         .input('fy_id', sql.Int, query.fy_id ?? null)
-        .input('quarter', sql.Int, query.quarter ?? null)
+        .input('quarter_from', sql.Date, query.quarter_from ?? null)
+        .input('quarter_to', sql.Date, query.quarter_to ?? null)
         .input('category_id', sql.Int, query.category_id ?? null)
         .input('owner_id', sql.Int, query.owner_id ?? null)
         .input('search', sql.NVarChar(100), query.search ?? null)
@@ -78,9 +87,7 @@ export const listBudgetLinesService = async (query: BudgetLineQuery) => {
             SELECT COUNT(*) AS total ${from};
 
             SELECT ${DISPLAY_SELECT},
-                   fa.planned_amount AS fy_planned_amount,
-                   fa.q1_amount AS fy_q1_amount, fa.q2_amount AS fy_q2_amount,
-                   fa.q3_amount AS fy_q3_amount, fa.q4_amount AS fy_q4_amount
+                   fa.planned_amount AS fy_planned_amount
             ${from}
             ORDER BY cat.sort_order, bl.code, bl.description
             OFFSET @offset ROWS FETCH NEXT @limit ROWS ONLY;
@@ -100,9 +107,11 @@ export const getBudgetLineDetailService = async (budgetLineId: number) => {
             WHERE bl.budget_line_id = @id AND bl.is_deleted = 0;
 
             SELECT a.allocation_id, a.fy_id, fy.code AS fy_code, a.planned_amount,
-                   a.q1_amount, a.q2_amount, a.q3_amount, a.q4_amount
+                   ISNULL(v.q1_actual, 0) AS q1_actual, ISNULL(v.q2_actual, 0) AS q2_actual,
+                   ISNULL(v.q3_actual, 0) AS q3_actual, ISNULL(v.q4_actual, 0) AS q4_actual
             FROM dbo.BudgetAllocations a
             JOIN dbo.FinancialYears fy ON fy.fy_id = a.fy_id
+            LEFT JOIN dbo.vw_BudgetLineActuals v ON v.budget_line_id = a.budget_line_id AND v.fy_id = a.fy_id
             WHERE a.budget_line_id = @id
             ORDER BY fy.start_date;
 
@@ -138,6 +147,15 @@ const getAllocatedTotal = async (tx: sql.Transaction, budgetLineId: number, excl
     return Number(result.recordset[0].total);
 };
 
+// What has actually been paid on a line in one financial year
+const getPaidInYear = async (tx: sql.Transaction, budgetLineId: number, fyId: number): Promise<number> => {
+    const result = await new sql.Request(tx)
+        .input('id', sql.Int, budgetLineId)
+        .input('fy_id', sql.Int, fyId)
+        .query(`SELECT ISNULL(SUM(paid_amount), 0) AS total FROM dbo.vw_BudgetLineActuals WHERE budget_line_id = @id AND fy_id = @fy_id`);
+    return Number(result.recordset[0].total);
+};
+
 const assertWithinTotal = (allocated: number, total: number) => {
     if (toCents(allocated) > toCents(total)) {
         throw new HttpError(400,
@@ -151,19 +169,15 @@ const upsertAllocation = async (tx: sql.Transaction, budgetLineId: number, fyId:
         .input('budget_line_id', sql.Int, budgetLineId)
         .input('fy_id', sql.Int, fyId)
         .input('planned_amount', sql.Decimal(18, 2), a.planned_amount)
-        .input('q1', sql.Decimal(18, 2), a.q1_amount)
-        .input('q2', sql.Decimal(18, 2), a.q2_amount)
-        .input('q3', sql.Decimal(18, 2), a.q3_amount)
-        .input('q4', sql.Decimal(18, 2), a.q4_amount)
         .query(`
             MERGE dbo.BudgetAllocations WITH (HOLDLOCK) AS target
             USING (SELECT @budget_line_id AS budget_line_id, @fy_id AS fy_id) AS src
                ON target.budget_line_id = src.budget_line_id AND target.fy_id = src.fy_id
             WHEN MATCHED THEN
-                UPDATE SET planned_amount = @planned_amount, q1_amount = @q1, q2_amount = @q2, q3_amount = @q3, q4_amount = @q4
+                UPDATE SET planned_amount = @planned_amount
             WHEN NOT MATCHED THEN
-                INSERT (budget_line_id, fy_id, planned_amount, q1_amount, q2_amount, q3_amount, q4_amount)
-                VALUES (@budget_line_id, @fy_id, @planned_amount, @q1, @q2, @q3, @q4);`);
+                INSERT (budget_line_id, fy_id, planned_amount)
+                VALUES (@budget_line_id, @fy_id, @planned_amount);`);
 };
 
 // ------------------------------- Commands ------------------------------------
@@ -202,21 +216,13 @@ export const createBudgetLineService = async (
     });
 };
 
-// The stored plan of one year, or zeros if there is none yet
+// The stored plan of one year, or zero if there is none yet
 export const getAllocationService = async (budgetLineId: number, fyId: number) => {
     const result = await getDbPool().request()
         .input('budget_line_id', sql.Int, budgetLineId)
         .input('fy_id', sql.Int, fyId)
-        .query(`SELECT planned_amount, q1_amount, q2_amount, q3_amount, q4_amount
-                FROM dbo.BudgetAllocations WHERE budget_line_id = @budget_line_id AND fy_id = @fy_id`);
-    const row = result.recordset[0];
-    return {
-        planned_amount: Number(row?.planned_amount ?? 0),
-        q1_amount: Number(row?.q1_amount ?? 0),
-        q2_amount: Number(row?.q2_amount ?? 0),
-        q3_amount: Number(row?.q3_amount ?? 0),
-        q4_amount: Number(row?.q4_amount ?? 0),
-    };
+        .query(`SELECT planned_amount FROM dbo.BudgetAllocations WHERE budget_line_id = @budget_line_id AND fy_id = @fy_id`);
+    return { planned_amount: Number(result.recordset[0]?.planned_amount ?? 0) };
 };
 
 // Update a budget line's own fields (allocations have their own endpoint)
@@ -259,6 +265,11 @@ export const setAllocationService = async (line: BudgetLineRow, fyId: number, in
         const otherYears = await getAllocatedTotal(tx, line.budget_line_id, fyId);
         assertWithinTotal(otherYears + input.planned_amount, Number(line.total_amount));
 
+        const paid = await getPaidInYear(tx, line.budget_line_id, fyId);
+        if (toCents(input.planned_amount) < toCents(paid)) {
+            throw new HttpError(400, `The plan for this year cannot be less than what has already been paid in it (${paid.toLocaleString()})`);
+        }
+
         await upsertAllocation(tx, line.budget_line_id, fyId, input);
         await writeAudit(tx, {
             userId: actorId, action: 'UPDATE', entity: 'BudgetLines', entityId: line.budget_line_id,
@@ -270,6 +281,11 @@ export const setAllocationService = async (line: BudgetLineRow, fyId: number, in
 // Remove the allocation of one financial year. Returns false if there was none.
 export const deleteAllocationService = async (line: BudgetLineRow, fyId: number, actorId: number): Promise<boolean> => {
     return withTransaction(async (tx) => {
+        const paid = await getPaidInYear(tx, line.budget_line_id, fyId);
+        if (paid > 0) {
+            throw new HttpError(409, `This year's plan cannot be removed: ${paid.toLocaleString()} has already been paid in it`);
+        }
+
         const result = await new sql.Request(tx)
             .input('id', sql.Int, line.budget_line_id)
             .input('fy_id', sql.Int, fyId)

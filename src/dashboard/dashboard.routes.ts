@@ -21,6 +21,7 @@ dashboardRoutes.get('/expiring-contracts', dashboardControllers.getExpiringContr
 dashboardRoutes.get('/attention', dashboardControllers.getAttentionList);
 dashboardRoutes.get('/breakdowns', dashboardControllers.getBreakdowns);
 dashboardRoutes.get('/activity-summary', dashboardControllers.getActivitySummary);
+dashboardRoutes.get('/balance-checks', dashboardControllers.getBalanceChecks);
 dashboardRoutes.get('/monthly-trend', dashboardControllers.getMonthlyTrend);
 dashboardRoutes.get('/top-budget-lines', dashboardControllers.getTopBudgetLines);
 dashboardRoutes.get('/recent-activity', dashboardControllers.getRecentActivity);

@@ -14,8 +14,11 @@ export const CreateTaskSchema = z.object({
     procurement_id: id.nullish(),
     section_id: id.nullish(),
     priority_id: id.nullish(),
+    category_id: id.nullish(),
     due_date: isoDate.nullish(),
     status: z.enum(TASK_STATUSES).default('Open'),
+    is_escalated: z.boolean().default(false),
+    escalated_to: optionalText(150),
 });
 
 export const UpdateTaskSchema = z.object({
@@ -25,8 +28,11 @@ export const UpdateTaskSchema = z.object({
     procurement_id: id.nullish(),
     section_id: id.nullish(),
     priority_id: id.nullish(),
+    category_id: id.nullish(),
     due_date: isoDate.nullish(),
     status: z.enum(TASK_STATUSES).optional(),
+    is_escalated: z.boolean().optional(),
+    escalated_to: optionalText(150).optional(),
 });
 
 export const TaskQuerySchema = PaginationQuerySchema.extend({

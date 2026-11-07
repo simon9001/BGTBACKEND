@@ -12,6 +12,7 @@ import { assertLookups } from '../lookups/lookup.service.js';
 import { assertCanEdit } from '../utils/access.js';
 import { HttpError } from '../utils/http-error.js';
 import { cached } from '../utils/cache.js';
+import { quarterDates } from '../financial-years/financialYear.service.js';
 import { buildPagination } from '../utils/pagination.js';
 import * as budgetLineServices from './budgetLine.service.js';
 
@@ -31,7 +32,8 @@ const findLineOrFail = async (budgetLineId: number) => {
 // GET /api/budget-lines
 export const listBudgetLines = async (c: Context<AppEnv>) => {
     const query = validateQuery(c, BudgetLineQuerySchema);
-    const { total, rows } = await cached(`budget-lines:${JSON.stringify(query)}`, () => budgetLineServices.listBudgetLinesService(query));
+    const dates = await quarterDates(query.fy_id, query.quarter);
+    const { total, rows } = await cached(`budget-lines:${JSON.stringify(query)}`, () => budgetLineServices.listBudgetLinesService({ ...query, ...dates }));
     return c.json({ success: true, data: rows, pagination: buildPagination(query.page, query.limit, total) });
 };
 

@@ -57,7 +57,6 @@ const TrackerDataSchema = z.object({
         owner: z.string(),
         priority: z.string().nullable(),
         amounts: z.array(z.number()), // planned spend for financialYears, in order
-        quarters: z.array(z.number()).length(4), // Q1-Q4 of the current financial year
     })),
     // One memo can request several budget lines
     memos: z.array(z.object({
@@ -94,12 +93,6 @@ const TrackerDataSchema = z.object({
 }).refine(
     (data) => data.budgetLines.every((l) => l.amounts.length === data.financialYears.length),
     { message: 'Every budget line needs one amount per financial year' },
-).refine(
-    (data) => {
-        const currentIndex = data.financialYears.indexOf(data.currentFinancialYear);
-        return data.budgetLines.every((l) => l.quarters.reduce((sum, q) => sum + q, 0) <= (l.amounts[currentIndex] ?? 0));
-    },
-    { message: 'A budget line\'s quarters cannot add up to more than its amount for the current year' },
 );
 
 const loadTrackerData = () => {
@@ -243,7 +236,7 @@ const run = async () => {
             return procurementId;
         };
 
-        const insertStageEvent = async (procurementId: number, stage: string, status: string, eventDate: string, notes: string, recordedBy: number) => {
+        const insertStageEvent = async (procurementId: number, stage: string, status: string, eventDate: string, notes: string, recordedBy: number, dateKnown = true) => {
             const result = await query()
                 .input('procurement_id', sql.Int, procurementId)
                 .input('stage_id', sql.Int, stageId(stage))
@@ -251,9 +244,10 @@ const run = async () => {
                 .input('event_date', sql.Date, new Date(eventDate))
                 .input('notes', sql.NVarChar(1000), notes)
                 .input('recorded_by', sql.Int, recordedBy)
-                .query(`INSERT INTO dbo.StageEvents (procurement_id, stage_id, status, event_date, notes, recorded_by)
+                .input('date_known', sql.Bit, dateKnown)
+                .query(`INSERT INTO dbo.StageEvents (procurement_id, stage_id, status, event_date, notes, recorded_by, date_known)
                         OUTPUT INSERTED.event_id
-                        VALUES (@procurement_id, @stage_id, @status, @event_date, @notes, @recorded_by)`);
+                        VALUES (@procurement_id, @stage_id, @status, @event_date, @notes, @recorded_by, @date_known)`);
             await writeAudit(tx, { userId: adminId, action: 'CREATE', entity: 'StageEvents', entityId: result.recordset[0].event_id, newValues: { procurement_id: procurementId, stage, status, event_date: eventDate } });
             counts.stageEvents++;
         };
@@ -286,19 +280,13 @@ const run = async () => {
                 // Years with nothing planned get no row
                 for (const [index, amount] of budgetLine.amounts.entries()) {
                     if (amount === 0) continue;
-                    // The sheets' Q1-Q4 columns are for the current year
                     const fyCode = data.financialYears[index]!;
-                    const [q1 = 0, q2 = 0, q3 = 0, q4 = 0] = fyCode === data.currentFinancialYear ? budgetLine.quarters : [];
                     await query()
                         .input('budget_line_id', sql.Int, budgetLineId)
                         .input('fy_id', sql.Int, fyId(fyCode))
                         .input('planned_amount', sql.Decimal(18, 2), amount)
-                        .input('q1', sql.Decimal(18, 2), q1)
-                        .input('q2', sql.Decimal(18, 2), q2)
-                        .input('q3', sql.Decimal(18, 2), q3)
-                        .input('q4', sql.Decimal(18, 2), q4)
-                        .query(`INSERT INTO dbo.BudgetAllocations (budget_line_id, fy_id, planned_amount, q1_amount, q2_amount, q3_amount, q4_amount)
-                                VALUES (@budget_line_id, @fy_id, @planned_amount, @q1, @q2, @q3, @q4)`);
+                        .query(`INSERT INTO dbo.BudgetAllocations (budget_line_id, fy_id, planned_amount)
+                                VALUES (@budget_line_id, @fy_id, @planned_amount)`);
                     counts.allocations++;
                 }
             }
@@ -324,7 +312,7 @@ const run = async () => {
                 await insertStageEvent(procurementId, 'DG_APPROVAL', 'Approved', memo.approved, memo.title, userId(memo.owner));
             }
             for (const step of progress?.steps ?? []) {
-                await insertStageEvent(procurementId, step.stage, step.status, data.undatedStepDate, UNDATED_NOTE, adminId);
+                await insertStageEvent(procurementId, step.stage, step.status, data.undatedStepDate, UNDATED_NOTE, adminId, false);
             }
             await recomputeCurrentStage(tx, procurementId);
         }
